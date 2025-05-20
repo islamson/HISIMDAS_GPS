@@ -23,23 +23,28 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import co.yml.charts.common.model.Point
 import com.google.android.gms.location.LocationServices
+import fitech.tutorials.rsmgraphlast.ui.HomeScreen
+import fitech.tutorials.rsmgraphlast.ui.HomeViewModel
 import fitech.tutorials.rsmgraphlast.ui.LocationViewModel
 import fitech.tutorials.rsmgraphlast.ui.SpeedChart
 import fitech.tutorials.rsmgraphlast.ui.theme.RSMGRAPHLASTTheme
 
 class MainActivity : ComponentActivity() {
-    private val viewModel: LocationViewModel by viewModels()
+    private val locationViewModel: LocationViewModel by viewModels()
+    private val homeViewModel: HomeViewModel by viewModels()
 
     private val locationPermissionRequest = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
         when {
-            permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
-                    permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true -> {
-                // Permissions granted
+            permissions.getOrDefault(Manifest.permission.ACCESS_FINE_LOCATION, false) -> {
+                // Precise location access granted.
+            }
+            permissions.getOrDefault(Manifest.permission.ACCESS_COARSE_LOCATION, false) -> {
+                // Only approximate location access granted.
             }
             else -> {
-                // No location access
+                // No location access granted.
             }
         }
     }
@@ -70,11 +75,20 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             RSMGRAPHLASTTheme {
+                var showHomeScreen by remember { mutableStateOf(true) }
+
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    MainScreen(viewModel)
+                    if (showHomeScreen) {
+                        HomeScreen(
+                            viewModel = homeViewModel,
+                            onContinue = { showHomeScreen = false }
+                        )
+                    } else {
+                        MainScreen(locationViewModel)
+                    }
                 }
             }
         }
