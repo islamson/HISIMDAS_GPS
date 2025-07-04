@@ -2,7 +2,9 @@ package fitech.tutorials.rsmgraphlast.ui
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.github.mikephil.charting.data.Entry
 import fitech.tutorials.rsmgraphlast.data.api.ApiService
+import fitech.tutorials.rsmgraphlast.data.models.Station
 import fitech.tutorials.rsmgraphlast.data.models.Train
 import fitech.tutorials.rsmgraphlast.data.models.Track
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -29,6 +31,18 @@ class HomeViewModel : ViewModel() {
 
     private val _selectedTrack = MutableStateFlow<Track?>(null)
     val selectedTrack: StateFlow<Track?> = _selectedTrack
+
+    private val _selectedDirection = MutableStateFlow<String?>(null)
+    val selectedDirection : StateFlow<String?> = _selectedDirection
+
+    private val _selectedInitialStation = MutableStateFlow<Station?>(null)
+    val selectedInitialStation : StateFlow<Station?> = _selectedInitialStation
+
+    private val _selectedFinalStation = MutableStateFlow<Station?>(null)
+    val selectedFinalStation : StateFlow<Station?> = _selectedFinalStation
+
+    private val _speedLimitPoints = MutableStateFlow<List<Entry>>(emptyList())
+    val speedLimitPoints : StateFlow<List<Entry>> = _speedLimitPoints
 
     init {
         loadData()
@@ -72,5 +86,37 @@ class HomeViewModel : ViewModel() {
 
     fun selectTrack(track: Track) {
         _selectedTrack.value = track
+    }
+
+    fun selectDirection(direction : String){
+        _selectedDirection.value = direction
+    }
+
+    fun selectInitialStation(initialStation : Station){
+        _selectedInitialStation.value = initialStation
+    }
+
+    fun selectFinalStation(finalStation : Station){
+        _selectedFinalStation.value = finalStation
+    }
+
+    fun calculateSpeedLimits(){
+        val track = _selectedTrack.value ?: return
+        val direction = _selectedDirection.value ?: return
+        val initial = _selectedInitialStation.value ?: return
+        val final = _selectedFinalStation.value ?: return
+
+        val speedLimits = if (direction == "West to East") track.speedLimits else track.speedLimitsInverted
+
+        val result = mutableListOf<Entry>()
+        for (i in speedLimits.x.indices) {
+            val pos = speedLimits.x[i]
+            if (pos in initial.berthingPosition.toFloat()..final.berthingPosition.toFloat()) {
+                if(result.size >= 1)
+                    result.add(Entry((pos - 0.0000001).toFloat(), speedLimits.y[i - 1].toFloat()))
+                result.add(Entry(pos.toFloat(), speedLimits.y[i].toFloat()))
+            }
+        }
+        _speedLimitPoints.value = result
     }
 } 

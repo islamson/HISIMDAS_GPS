@@ -25,7 +25,7 @@ class LocationViewModel : ViewModel() {
     private var lastLocation: Location? = null
     private var totalDistance: Float = 0f
     private var lastSpeed: Float = 0f
-    private val maxSpeedDifference = 40f // Maximum allowed speed difference in km/h
+    private val maxSpeedDifference = 10f // Maximum allowed speed difference in km/h
     private var csvFile : File? = null
     private var csvWriter : BufferedWriter? = null
 
@@ -43,18 +43,19 @@ class LocationViewModel : ViewModel() {
         override fun onLocationResult(result: LocationResult) {
             result.lastLocation?.let { currentLocation ->
                 if (startLocation == null) {
+                    println("Bu ilk deneme. startLocation = null burada.")
                     startLocation = currentLocation
                     lastLocation = currentLocation
                     totalDistance = 0f
                     lastSpeed = 0f
                     return
                 }
-                // Calculate speed (km/h)
+
                 val timeDiffInSeconds = (currentLocation.time - lastLocation!!.time) / 1000f
                 val distanceInMeters = lastLocation!!.distanceTo(currentLocation)
                 val speedInKmh = (distanceInMeters / timeDiffInSeconds) * 3.6f // Convert m/s to km/h
 
-                println("Current Speed: ${speedInKmh}, Distance: ${distanceInMeters}, timeDiff: ${timeDiffInSeconds}")
+                println("Current Speed: ${speedInKmh}, Distance: ${distanceInMeters}, Total Distance: $totalDistance timeDiff: ${timeDiffInSeconds}")
                 println("Latitude: ${currentLocation.latitude}, Longitude: ${currentLocation.longitude}")
 
                 // Check for outlier speed changes
@@ -105,11 +106,11 @@ class LocationViewModel : ViewModel() {
         csvWriter?.write("Timestamp,Latitude,Longitude,Position(m),Speed(km/h)")
         csvWriter?.newLine()
 
-        val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY,400)
-            .setMinUpdateIntervalMillis(400)
+        val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY,50)
+            .setMinUpdateIntervalMillis(50)
             .setWaitForAccurateLocation(true)
-            .setMaxUpdateAgeMillis(0)
-            .setIntervalMillis(400)
+            .setMaxUpdateAgeMillis(50)
+            .setIntervalMillis(50)
             .setGranularity(Granularity.GRANULARITY_FINE)
             .build()
 
