@@ -65,8 +65,7 @@ dependencies {
     
     // Charts
     implementation(libs.mpandroidchart)
-    implementation(libs.ycharts)
-    
+
     // Compose Runtime
     implementation(libs.androidx.runtime)
     implementation(libs.androidx.runtime.livedata)
@@ -79,7 +78,11 @@ dependencies {
     implementation(libs.retrofit)
     implementation(libs.converter.gson)
     implementation(libs.logging.interceptor)
-    
+
+
+    //Linear Algebra Library For Matrix Operations in Kalman Filter
+    implementation("org.ejml:ejml-simple:0.42")
+
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

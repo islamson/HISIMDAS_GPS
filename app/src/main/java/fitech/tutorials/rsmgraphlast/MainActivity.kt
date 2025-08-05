@@ -1,6 +1,8 @@
 package fitech.tutorials.rsmgraphlast
 
 import android.Manifest
+import android.hardware.Sensor
+import android.hardware.SensorManager
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -19,20 +21,23 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import androidx.core.content.getSystemService
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.github.mikephil.charting.data.Entry
 import com.google.android.gms.location.LocationServices
 import fitech.tutorials.rsmgraphlast.ui.HomeScreen
-import fitech.tutorials.rsmgraphlast.ui.HomeViewModel
-import fitech.tutorials.rsmgraphlast.ui.LocationViewModel
+import fitech.tutorials.rsmgraphlast.data.models.HomeViewModel
+import fitech.tutorials.rsmgraphlast.data.models.LocationViewModel
 import fitech.tutorials.rsmgraphlast.ui.SpeedChart
 import fitech.tutorials.rsmgraphlast.ui.theme.RSMGRAPHLASTTheme
 
 class MainActivity : ComponentActivity() {
     private val locationViewModel: LocationViewModel by viewModels()
     private val homeViewModel: HomeViewModel by viewModels()
+    private var sensorManager : SensorManager? = null
     private val locationPermissionRequest = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
@@ -73,6 +78,8 @@ class MainActivity : ComponentActivity() {
             )
         )
 
+        sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
+
         setContent {
             RSMGRAPHLASTTheme {
                 var showHomeScreen by remember { mutableStateOf(true) }
@@ -87,7 +94,7 @@ class MainActivity : ComponentActivity() {
                             onContinue = { showHomeScreen = false }
                         )
                     } else {
-                        MainScreen(locationViewModel, homeViewModel)
+                        MainScreen(locationViewModel, homeViewModel, sensorManager!!)
                     }
                 }
             }
@@ -96,11 +103,12 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun MainScreen(locationViewModel: LocationViewModel, homeViewModel: HomeViewModel ) {
+fun MainScreen(locationViewModel: LocationViewModel, homeViewModel: HomeViewModel, sensorManager : SensorManager) {
     val context = LocalContext.current
     val speed by locationViewModel.speed.collectAsState()
     val position by locationViewModel.position.collectAsState()
     val isTracking by locationViewModel.isTracking
+    val dataNumber by locationViewModel.dataNumber.collectAsState()
     val initialStation by homeViewModel.selectedInitialStation.collectAsState()
     val finalStation by homeViewModel.selectedFinalStation.collectAsState()
     val direction by homeViewModel.selectedDirection.collectAsState()
@@ -110,10 +118,10 @@ fun MainScreen(locationViewModel: LocationViewModel, homeViewModel: HomeViewMode
     val speedLimitPoints by homeViewModel.speedLimitPoints.collectAsState()
     val velocityPoints = remember { mutableStateListOf<Entry>() }
 
+
     LaunchedEffect(speed, position) {
-        if (position <= 14000) {  // Only add points within our x-axis range
-            velocityPoints.add(Entry(position + initialStation!!.berthingPosition, speed))  // Convert position to km for x-axis
-        }
+        // Only add points within our x-axis range
+        velocityPoints.add(Entry(position + initialStation!!.berthingPosition, speed))  // Convert position to km for x-axis
     }
 
     Box(modifier = Modifier.fillMaxSize()){
@@ -149,9 +157,7 @@ fun MainScreen(locationViewModel: LocationViewModel, homeViewModel: HomeViewMode
                     onClick = {
                         if (!isTracking) {
                             velocityPoints.clear()
-                            locationViewModel.startTracking(
-                                LocationServices.getFusedLocationProviderClient(context)
-                            )
+                            locationViewModel.startTracking(LocationServices.getFusedLocationProviderClient(context), sensorManager)
                         }
                     },
                     enabled = !isTracking,

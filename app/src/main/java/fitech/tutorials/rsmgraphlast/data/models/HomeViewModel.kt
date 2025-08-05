@@ -1,12 +1,9 @@
-package fitech.tutorials.rsmgraphlast.ui
+package fitech.tutorials.rsmgraphlast.data.models
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.github.mikephil.charting.data.Entry
 import fitech.tutorials.rsmgraphlast.data.api.ApiService
-import fitech.tutorials.rsmgraphlast.data.models.Station
-import fitech.tutorials.rsmgraphlast.data.models.Train
-import fitech.tutorials.rsmgraphlast.data.models.Track
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
