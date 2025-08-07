@@ -53,7 +53,7 @@ class LocationViewModel : ViewModel() {
 
                 val timeDiffInSeconds = (currentLocation.time - lastLocation!!.time) / 1000f
                 val distanceInMeters = lastLocation!!.distanceTo(currentLocation)
-                val speedInKmh = (distanceInMeters / timeDiffInSeconds) * 3.6f // Convert m/s to km/h
+                var speedInKmh = (distanceInMeters / timeDiffInSeconds) * 3.6f // Convert m/s to km/h
 
                 println("Current Speed: ${speedInKmh}, Distance: ${distanceInMeters}, Total Distance: $totalDistance timeDiff: ${timeDiffInSeconds}")
                 println("Latitude: ${currentLocation.latitude}, Longitude: ${currentLocation.longitude}")
@@ -71,6 +71,10 @@ class LocationViewModel : ViewModel() {
                         write("$timeStamp,${currentLocation.latitude},${currentLocation.longitude},${totalDistance.roundToInt()},${speedInKmh.roundToInt()}")
                         newLine()
                         flush()
+                    }
+
+                    if(speedDifference < 1.5f){
+                        speedInKmh = lastSpeed
                     }
 
                     viewModelScope.launch {
