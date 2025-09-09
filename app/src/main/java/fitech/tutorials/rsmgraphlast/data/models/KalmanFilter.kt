@@ -100,7 +100,7 @@ class KalmanFilter(
     fun getFilteredVy() : Double = x[3,0]
 
     fun getSpeed() : Float{
-        return sqrt((x[1,0] * x[1,0] + x[3,0] * x[3,0])).toFloat()
+        return (sqrt((x[1,0] * x[1,0] + x[3,0] * x[3,0])).toFloat() * 3.6f)
     }
 
     fun getPosition() : Float{

@@ -6,8 +6,8 @@ data class Track(
     val description: String,
     val createdAt: String,
     val updatedAt: String,
-    val tracklineStart: Int,
-    val tracklineEnd: Int,
+    val tracklineStart: Float,
+    val tracklineEnd: Float,
     val speedLimits: SpeedLimits,
     val speedLimitsInverted: SpeedLimits,
     val stations: List<Station>,
@@ -16,7 +16,7 @@ data class Track(
 
 data class SpeedLimits(
     val x: List<Double>,
-    val y: List<Int>,
+    val y: List<Float>,
     val count: Int,
     val xDataName: String,
     val yDataName: String
@@ -27,10 +27,10 @@ data class Station(
     val direction: Int,
     val name: String,
     val shortName: String,
-    val startPosition: Int,
-    val endPosition: Int,
-    val berthingPosition: Int,
-    val minimumJourneyTime: Int,
-    val naturalJourneyTime: Int,
-    val dwellTime: Int
+    val startPosition: Float,
+    val endPosition: Float,
+    val berthingPosition: Float,
+    val minimumJourneyTime: Float,
+    val naturalJourneyTime: Float,
+    val dwellTime: Float
 ) 

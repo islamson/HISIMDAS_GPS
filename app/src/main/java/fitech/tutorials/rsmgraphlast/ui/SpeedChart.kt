@@ -2,9 +2,7 @@ package fitech.tutorials.rsmgraphlast.ui
 
 import android.graphics.Color
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
@@ -21,14 +19,13 @@ import com.github.mikephil.charting.components.XAxis
 import com.github.mikephil.charting.data.Entry
 import com.github.mikephil.charting.data.LineData
 import com.github.mikephil.charting.data.LineDataSet
-import com.github.mikephil.charting.formatter.ValueFormatter
 
 @Composable
 fun SpeedChart(
     speedPoints: List<Entry>,
     speedLimits: List<Entry>,
-    initialStationBerthing: Int,
-    finalStationBerthing: Int,
+    initialStationBerthing: Float,
+    finalStationBerthing: Float,
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -72,7 +69,6 @@ fun SpeedChart(
                     setScaleEnabled(true)
                     setPinchZoom(true)
                     setDrawGridBackground(false)
-
                     // Configure X axis
                     xAxis.apply {
                         position = XAxis.XAxisPosition.BOTTOM
@@ -80,8 +76,8 @@ fun SpeedChart(
                         granularity = 10f
                         labelRotationAngle = 0f
                         isGranularityEnabled = false
-                        axisMaximum = finalStationBerthing.toFloat()
-                        axisMinimum = initialStationBerthing.toFloat()
+                        axisMaximum = finalStationBerthing.toFloat()    //max(initialStationBerthing, finalStationBerthing).toFloat()
+                        axisMinimum = initialStationBerthing.toFloat()  //min(initialStationBerthing, finalStationBerthing).toFloat()
                         setLabelCount(20)
                         gridColor = Color.LTGRAY
                         axisLineColor = Color.BLACK

@@ -12,7 +12,7 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = 1
-        versionName = "1.0"
+        versionName = "2.4"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -77,11 +77,12 @@ dependencies {
     // Retrofit
     implementation(libs.retrofit)
     implementation(libs.converter.gson)
+    implementation(libs.converter.scalars)
     implementation(libs.logging.interceptor)
 
 
     //Linear Algebra Library For Matrix Operations in Kalman Filter
-    implementation("org.ejml:ejml-simple:0.42")
+    implementation(libs.ejml.simple)
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
