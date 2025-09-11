@@ -18,15 +18,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import fitech.tutorials.rsmgraphlast.R
 import fitech.tutorials.rsmgraphlast.data.models.HomeViewModel
-import fitech.tutorials.rsmgraphlast.data.models.SettingsState
-import fitech.tutorials.rsmgraphlast.data.models.SettingsViewModel
+import fitech.tutorials.rsmgraphlast.data.models.AllConfigParams
 import fitech.tutorials.rsmgraphlast.data.models.Station
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun HomeScreen(
     homeViewModel: HomeViewModel,
-    settingsViewModel: SettingsViewModel,
     onContinue: () -> Unit,
 ) {
     val trains by homeViewModel.trains.collectAsState()
@@ -36,6 +34,7 @@ fun HomeScreen(
     val selectedDirection by homeViewModel.selectedDirection.collectAsState()
     val selectedInitialStation by homeViewModel.selectedInitialStation.collectAsState()
     val selectedFinalStation by homeViewModel.selectedFinalStation.collectAsState()
+    val currentSettings by homeViewModel.allConfigParams.collectAsState()
 
     var expandedTrain by remember { mutableStateOf(false) }
     var expandedTrack by remember { mutableStateOf(false) }
@@ -72,28 +71,13 @@ fun HomeScreen(
         }
     }
 
-
     // Şimdilik sabit; sonra ViewModel'den oku
-    val currentSettings by remember {
-        mutableStateOf(
-            SettingsState(
-                minSpeedDiff = 1.5f,
-                maxSpeedDiff = 35f,
-                minPositionDiff = 1f,
-                accDt = 0.2,
-                gpsNoDataTime = 2.0,
-                calibrationDataNumber = 100,
-                autoStationTransition = true
-            )
-        )
-    }
 
     val onOpenSettings = rememberOnOpenSettings(
         initial = currentSettings,
-        onSave = { new ->
-            // TODO: Burada ViewModel’e bağla (örn: viewModel.updateSettings(new))
-            // şimdilik log/assignment yapabilirsin
-            // currentSettings = new  --> eğer mutableStateOf ile var olarak tutarsan güncelle
+        onSave = { newIsAutoValue ->
+            // Yeni config ayarlarını gerekli değişkenlere viewModel üzerinden aktar
+            homeViewModel.selectAutoStateTransition(newIsAutoValue)
         }
     )
 

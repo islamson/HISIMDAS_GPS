@@ -1,12 +1,12 @@
 package fitech.tutorials.rsmgraphlast.data.models
 
-data class SettingsState(
+data class AllConfigParams(
     val minSpeedDiff: Float = 1f,
     val maxSpeedDiff: Float = 35f,
     val minPositionDiff: Float = 1f,
-    val accDt: Double = 0.2,
+    val accSamplingTime: Double = 0.2,
     val gpsNoDataTime: Double = 2.0,
     val calibrationDataNumber: Int = 30,
-    val autoStationTransition : Boolean = true
+    var autoStationTransition : Boolean = true
 )
 

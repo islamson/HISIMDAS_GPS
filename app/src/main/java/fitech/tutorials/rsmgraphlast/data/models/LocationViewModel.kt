@@ -8,8 +8,6 @@ import android.hardware.SensorManager
 import android.location.Location
 import android.os.Environment
 import android.util.Log
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -30,7 +28,7 @@ import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
 
-class LocationViewModel() : ViewModel(), SensorEventListener {
+class LocationViewModel(homeViewModel: HomeViewModel) : ViewModel(), SensorEventListener {
     private var kalmanFilter : KalmanFilter? = null
     private var totalData = 0
     private var isGPSReady = true
@@ -59,9 +57,13 @@ class LocationViewModel() : ViewModel(), SensorEventListener {
 
     private var lastVelocity: Float? = null
     private var currentVelocity : Float? = null
-    val maxSpeedDifference = 35f  // Maximum allowed speed difference in km/h
-    private val minSpeedDifference = 1.5f //Minimum allowed speed difference in km/h
-    private val minPositionDifference = 1f //Minimum allowed position difference in m
+    private val maxSpeedDifference = homeViewModel.allConfigParams.value.maxSpeedDiff  // Maximum allowed speed difference in km/h
+    private val minSpeedDifference = homeViewModel.allConfigParams.value.minSpeedDiff //Minimum allowed speed difference in km/h
+    private val minPositionDifference = homeViewModel.allConfigParams.value.minPositionDiff //Minimum allowed position difference in m
+    private val calibrationDataCount = homeViewModel.allConfigParams.value.calibrationDataNumber
+    private val accSamplingTime = homeViewModel.allConfigParams.value.accSamplingTime
+    private val gpsNoDataTime = homeViewModel.allConfigParams.value.gpsNoDataTime
+
     private var csvFile : File? = null
     private var csvWriter : BufferedWriter? = null
 
@@ -74,8 +76,6 @@ class LocationViewModel() : ViewModel(), SensorEventListener {
     private val _isTracking = mutableStateOf(false)
     val isTracking = _isTracking
 
-    private val _calibrationDataCount = mutableStateOf(30)
-    val calibrationDataCount = _calibrationDataCount
 
     private val _dataNumber = MutableStateFlow(0)
     val dataNumber = _dataNumber.asStateFlow()
@@ -126,12 +126,12 @@ class LocationViewModel() : ViewModel(), SensorEventListener {
                 yPositionTotal += xyPositions.second.absoluteValue
 
                 viewModelScope.launch {
-                    if(totalData < calibrationDataCount.value){
+                    if(totalData < calibrationDataCount){
                         _speed.emit(0f)
                         _position.emit(0f)
                     }
 
-                    else if (totalData == calibrationDataCount.value){
+                    else if (totalData == calibrationDataCount){
                         val lastXY = locationProcessor.latLongToXY(currentConvertedLocation.latitude, currentConvertedLocation.longitude, lastLocation!!.latitude, lastLocation!!.longitude)
                         val initialXVelocity = lastXY.first.absoluteValue / dt
                         val initialYVelocity = lastXY.second.absoluteValue / dt
@@ -277,8 +277,8 @@ class LocationViewModel() : ViewModel(), SensorEventListener {
                 val currentTime = System.currentTimeMillis()
                 val timeDiffLastLocat = (currentTime - lastLocation!!.time) / 1000.0    //Time difference in seconds between last location and current time
                 dt = (currentAccTime - lastAccTime) / 1_000_000_000.0 //time difference in seconds
-                if(dt > 0.2){
-                    if(timeDiffLastLocat > 2.0) {
+                if(dt > accSamplingTime){
+                    if(timeDiffLastLocat > gpsNoDataTime) {
                         kalmanFilter!!.predict(a_world[0].toDouble(), a_world[1].toDouble(), dt)
                         val kalmanPredictedSpeed = kalmanFilter!!.getSpeed().toInt()
                         val kalmanPredictedPosition = kalmanFilter!!.getPosition()

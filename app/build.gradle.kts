@@ -84,6 +84,10 @@ dependencies {
     //Linear Algebra Library For Matrix Operations in Kalman Filter
     implementation(libs.ejml.simple)
 
+    //Library to store parameters in local memory
+    implementation (libs.androidx.datastore.preferences) // veya en günceli
+
+
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

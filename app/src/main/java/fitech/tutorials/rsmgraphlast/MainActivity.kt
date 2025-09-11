@@ -41,16 +41,15 @@ import com.github.mikephil.charting.data.Entry
 import com.google.android.gms.location.LocationServices
 import fitech.tutorials.rsmgraphlast.ui.HomeScreen
 import fitech.tutorials.rsmgraphlast.data.models.HomeViewModel
+import fitech.tutorials.rsmgraphlast.data.models.LocationVMFactory
 import fitech.tutorials.rsmgraphlast.data.models.LocationViewModel
-import fitech.tutorials.rsmgraphlast.data.models.SettingsViewModel
 import fitech.tutorials.rsmgraphlast.ui.CalibrationDialog
 import fitech.tutorials.rsmgraphlast.ui.SpeedChart
 import fitech.tutorials.rsmgraphlast.ui.theme.RSMGRAPHLASTTheme
 
 class MainActivity : ComponentActivity() {
-    private val locationViewModel: LocationViewModel by viewModels()
-    private val settingsViewModel: SettingsViewModel by viewModels()
     private val homeViewModel: HomeViewModel by viewModels()
+    private val locationViewModel: LocationViewModel by viewModels { LocationVMFactory(homeViewModel) }
     private var sensorManager : SensorManager? = null
     private val locationPermissionRequest = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -109,7 +108,6 @@ class MainActivity : ComponentActivity() {
                     if (showHomeScreen) {
                         HomeScreen(
                             homeViewModel = homeViewModel,
-                            settingsViewModel = settingsViewModel,
                             onContinue = { showHomeScreen = false }
                         )
                     } else {
@@ -128,12 +126,8 @@ fun MainScreen(locationViewModel: LocationViewModel, homeViewModel: HomeViewMode
     val position by locationViewModel.position.collectAsState()
     val isTracking by locationViewModel.isTracking
     val dataNumber by locationViewModel.dataNumber.collectAsState()
-    val calibrationDataNumber by locationViewModel.calibrationDataCount
     val initialStation by homeViewModel.selectedInitialStation.collectAsState()
     val finalStation by homeViewModel.selectedFinalStation.collectAsState()
-    val direction by homeViewModel.selectedDirection.collectAsState()
-    val track by homeViewModel.selectedTrack.collectAsState()
-    val train by homeViewModel.selectedTrain.collectAsState()
 
     val speedLimitPoints by homeViewModel.speedLimitPoints.collectAsState()
     val velocityPoints = remember { mutableStateListOf<Entry>() }

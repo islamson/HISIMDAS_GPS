@@ -1,4 +1,3 @@
-import android.widget.ToggleButton
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -32,20 +31,14 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import fitech.tutorials.rsmgraphlast.data.models.SettingsState
+import fitech.tutorials.rsmgraphlast.data.models.AllConfigParams
 
 @Composable
 fun SettingsDialog(
-    initial: SettingsState,
+    initial: AllConfigParams,
     onDismiss: () -> Unit,
-    onSave: (SettingsState) -> Unit
+    onSave: (Boolean) -> Unit
 ) {
-    var minSpeed by remember { mutableStateOf(initial.minSpeedDiff.toString()) }
-    var maxSpeed by remember { mutableStateOf(initial.maxSpeedDiff.toString()) }
-    var minPos   by remember { mutableStateOf(initial.minPositionDiff.toString()) }
-    var accDt    by remember { mutableStateOf(initial.accDt.toString()) }
-    var gpsNo    by remember { mutableStateOf(initial.gpsNoDataTime.toString()) }
-    var calibN   by remember { mutableStateOf(initial.calibrationDataNumber.toString()) }
     var autoStTrans by remember { mutableStateOf(initial.autoStationTransition) }
 
     // Yardımcı TF'ler
@@ -124,13 +117,9 @@ fun SettingsDialog(
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
 
-                    item { RowItem("Acc dt (s)")             { TfDecimal(accDt)    { accDt    = it } } }
-                    item { RowItem("GPS No Data Time (s)")   { TfInt(gpsNo)        { gpsNo    = it } } }
-                    item { RowItem("Calibration Data Number"){ TfInt(calibN)       { calibN   = it } } }
                     item { RowItem_OnOff("Otomatik İstasyon Geçiş") { onOffButton(autoStTrans) { autoStTrans = it } }}
-                    item { RowItem("Min. Speed Diff")        { TfDecimal(minSpeed) { minSpeed = it } } }
-                    item { RowItem("Max. Speed Diff")        { TfDecimal(maxSpeed) { maxSpeed = it } } }
-                    item { RowItem("Min. Position Diff")     { TfDecimal(minPos)   { minPos   = it } } }
+                    //item { RowItem("Max. Speed Diff")        { TfDecimal(maxSpeed) { maxSpeed = it } } }
+                    //item { RowItem("Min. Position Diff")     { TfDecimal(minPos)   { minPos   = it } } }
 
                 }
 
@@ -140,20 +129,12 @@ fun SettingsDialog(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     TextButton(onClick = onDismiss) { Text("İptal") }
+
                     Spacer(Modifier.width(8.dp))
+                    
                     Button(
                         onClick = {
-                            onSave(
-                                SettingsState(
-                                    minSpeedDiff = minSpeed.toFloatOrNull() ?: initial.minSpeedDiff,
-                                    maxSpeedDiff = maxSpeed.toFloatOrNull() ?: initial.maxSpeedDiff,
-                                    minPositionDiff = minPos.toFloatOrNull() ?: initial.minPositionDiff,
-                                    accDt = accDt.toDoubleOrNull() ?: initial.accDt,
-                                    gpsNoDataTime = gpsNo.toDoubleOrNull() ?: initial.gpsNoDataTime,
-                                    calibrationDataNumber = calibN.toIntOrNull() ?: initial.calibrationDataNumber,
-                                    autoStationTransition = autoStTrans
-                                )
-                            )
+                            onSave(autoStTrans)
                         }
                     ) { Text("Kaydet") }
                 }

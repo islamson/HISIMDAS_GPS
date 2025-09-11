@@ -6,7 +6,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import fitech.tutorials.rsmgraphlast.data.models.SettingsState
+import fitech.tutorials.rsmgraphlast.data.models.AllConfigParams
 
 fun onSignOut(){
 
@@ -14,8 +14,8 @@ fun onSignOut(){
 
 @Composable
 fun rememberOnOpenSettings(
-    initial: SettingsState,
-    onSave: (SettingsState) -> Unit
+    initial: AllConfigParams,
+    onSave: (Boolean) -> Unit
 ): () -> Unit {
     var show by remember { mutableStateOf(false) }
 
