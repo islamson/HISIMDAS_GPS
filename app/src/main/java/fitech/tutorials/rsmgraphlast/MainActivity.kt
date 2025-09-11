@@ -42,12 +42,14 @@ import com.google.android.gms.location.LocationServices
 import fitech.tutorials.rsmgraphlast.ui.HomeScreen
 import fitech.tutorials.rsmgraphlast.data.models.HomeViewModel
 import fitech.tutorials.rsmgraphlast.data.models.LocationViewModel
+import fitech.tutorials.rsmgraphlast.data.models.SettingsViewModel
 import fitech.tutorials.rsmgraphlast.ui.CalibrationDialog
 import fitech.tutorials.rsmgraphlast.ui.SpeedChart
 import fitech.tutorials.rsmgraphlast.ui.theme.RSMGRAPHLASTTheme
 
 class MainActivity : ComponentActivity() {
     private val locationViewModel: LocationViewModel by viewModels()
+    private val settingsViewModel: SettingsViewModel by viewModels()
     private val homeViewModel: HomeViewModel by viewModels()
     private var sensorManager : SensorManager? = null
     private val locationPermissionRequest = registerForActivityResult(
@@ -106,7 +108,8 @@ class MainActivity : ComponentActivity() {
                 ) {
                     if (showHomeScreen) {
                         HomeScreen(
-                            viewModel = homeViewModel,
+                            homeViewModel = homeViewModel,
+                            settingsViewModel = settingsViewModel,
                             onContinue = { showHomeScreen = false }
                         )
                     } else {
@@ -125,6 +128,7 @@ fun MainScreen(locationViewModel: LocationViewModel, homeViewModel: HomeViewMode
     val position by locationViewModel.position.collectAsState()
     val isTracking by locationViewModel.isTracking
     val dataNumber by locationViewModel.dataNumber.collectAsState()
+    val calibrationDataNumber by locationViewModel.calibrationDataCount
     val initialStation by homeViewModel.selectedInitialStation.collectAsState()
     val finalStation by homeViewModel.selectedFinalStation.collectAsState()
     val direction by homeViewModel.selectedDirection.collectAsState()
@@ -136,7 +140,7 @@ fun MainScreen(locationViewModel: LocationViewModel, homeViewModel: HomeViewMode
     val speedCircleColor = remember { mutableStateOf(Color.Black) }
     val isOverLimit = remember { mutableStateOf(false) }
 
-    val showCalibrationDialog = isTracking && (dataNumber <= 20)
+    val showCalibrationDialog = isTracking && (dataNumber <= 30)
 
     LaunchedEffect(speed, position) {
         // Only add points within our x-axis range
@@ -167,7 +171,7 @@ fun MainScreen(locationViewModel: LocationViewModel, homeViewModel: HomeViewMode
     }
 
     Box(modifier = Modifier.fillMaxSize()){
-        CalibrationDialog(showCalibrationDialog, dataNumber/20f)
+        CalibrationDialog(showCalibrationDialog, dataNumber/30f)
 
         VelocityBadge(
             velocity = speed,

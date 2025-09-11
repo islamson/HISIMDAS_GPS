@@ -8,6 +8,8 @@ import android.hardware.SensorManager
 import android.location.Location
 import android.os.Environment
 import android.util.Log
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -28,7 +30,7 @@ import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
 
-class LocationViewModel : ViewModel(), SensorEventListener {
+class LocationViewModel() : ViewModel(), SensorEventListener {
     private var kalmanFilter : KalmanFilter? = null
     private var totalData = 0
     private var isGPSReady = true
@@ -57,7 +59,7 @@ class LocationViewModel : ViewModel(), SensorEventListener {
 
     private var lastVelocity: Float? = null
     private var currentVelocity : Float? = null
-    private val maxSpeedDifference = 35f // Maximum allowed speed difference in km/h
+    val maxSpeedDifference = 35f  // Maximum allowed speed difference in km/h
     private val minSpeedDifference = 1.5f //Minimum allowed speed difference in km/h
     private val minPositionDifference = 1f //Minimum allowed position difference in m
     private var csvFile : File? = null
@@ -71,6 +73,9 @@ class LocationViewModel : ViewModel(), SensorEventListener {
 
     private val _isTracking = mutableStateOf(false)
     val isTracking = _isTracking
+
+    private val _calibrationDataCount = mutableStateOf(30)
+    val calibrationDataCount = _calibrationDataCount
 
     private val _dataNumber = MutableStateFlow(0)
     val dataNumber = _dataNumber.asStateFlow()
@@ -104,10 +109,13 @@ class LocationViewModel : ViewModel(), SensorEventListener {
                 lastVelocity?.let {     //Buraya birşeyler düşün!!! lastVelocity 0 lanıyor 1.turun sonunda çünkü
                     if(abs(lastVelocity!! - currentVelocity!!) > maxSpeedDifference)
                         currentVelocity = lastVelocity
-                    else if(abs(lastVelocity!! - currentVelocity!!) < minSpeedDifference)
+                    else if(abs(lastVelocity!! - currentVelocity!!) < minSpeedDifference){
                         currentVelocity = lastVelocity
-                    else
-                        totalDistance += positionDifference
+                    }
+                    if(abs(lastVelocity!! - currentVelocity!!) <= maxSpeedDifference){
+                        if(positionDifference >= minPositionDifference)
+                            totalDistance += positionDifference
+                    }
                 }
 
                 Log.d("GPS Measurement", "Last Velocity:${lastVelocity}, Curr Velocity:${currentVelocity}, Pos Diff:${positionDifference}")
@@ -118,12 +126,12 @@ class LocationViewModel : ViewModel(), SensorEventListener {
                 yPositionTotal += xyPositions.second.absoluteValue
 
                 viewModelScope.launch {
-                    if(totalData < 20){
+                    if(totalData < calibrationDataCount.value){
                         _speed.emit(0f)
                         _position.emit(0f)
                     }
 
-                    else if (totalData == 20){
+                    else if (totalData == calibrationDataCount.value){
                         val lastXY = locationProcessor.latLongToXY(currentConvertedLocation.latitude, currentConvertedLocation.longitude, lastLocation!!.latitude, lastLocation!!.longitude)
                         val initialXVelocity = lastXY.first.absoluteValue / dt
                         val initialYVelocity = lastXY.second.absoluteValue / dt

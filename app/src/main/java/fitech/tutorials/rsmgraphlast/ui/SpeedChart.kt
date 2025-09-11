@@ -76,8 +76,8 @@ fun SpeedChart(
                         granularity = 10f
                         labelRotationAngle = 0f
                         isGranularityEnabled = false
-                        axisMaximum = finalStationBerthing.toFloat()    //max(initialStationBerthing, finalStationBerthing).toFloat()
-                        axisMinimum = initialStationBerthing.toFloat()  //min(initialStationBerthing, finalStationBerthing).toFloat()
+                        axisMaximum = finalStationBerthing    //max(initialStationBerthing, finalStationBerthing).toFloat()
+                        axisMinimum = initialStationBerthing  //min(initialStationBerthing, finalStationBerthing).toFloat()
                         setLabelCount(20)
                         gridColor = Color.LTGRAY
                         axisLineColor = Color.BLACK

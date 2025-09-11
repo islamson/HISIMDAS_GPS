@@ -62,6 +62,9 @@ class HomeViewModel : ViewModel() {
     private val _speedLimitPoints = MutableStateFlow<List<Entry>>(emptyList())
     val speedLimitPoints : StateFlow<List<Entry>> = _speedLimitPoints
 
+    private val _selectedSkippedStations = MutableStateFlow<Set<Station>>(emptySet())
+    val selectedSkippedStations : StateFlow<Set<Station>> = _selectedSkippedStations
+
     init {
         loginAndLoad("test", "123456")
     }
@@ -152,5 +155,9 @@ class HomeViewModel : ViewModel() {
         track.speedLimits.x.forEach{point->
             println("SpeedPoint:${point}")
         }
+    }
+
+    fun selectSkippedStations(skippedStations: Set<Station>){
+        _selectedSkippedStations.value = skippedStations
     }
 } 
