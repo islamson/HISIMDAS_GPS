@@ -16,6 +16,6 @@ interface ApiService {
     @POST("get-track-list")
     suspend fun getTrackList(): List<Track>
 
-    @POST("get-system-config")
+    @POST("get-mobile-settings")
     suspend fun getSystemConfig(): AdminConfigParams
 } 

@@ -38,10 +38,10 @@ fun Context.readAllConfigParams(): Flow<AllConfigParams> =
 // Sadece admin’den gelenleri yaz (kullanıcı ayarını bozma)
 suspend fun Context.saveAdminConfig(admin: AdminConfigParams) {
     settingsDataStore.edit { p ->
-        p[Keys.MIN_SPEED_DIFF] = admin.minSpeedDiff
-        p[Keys.MAX_SPEED_DIFF] = admin.maxSpeedDiff
-        p[Keys.MIN_POSITION_DIFF] = admin.minPositionDiff
-        p[Keys.ACC_DT] = admin.accSamplingTime
+        p[Keys.MIN_SPEED_DIFF] = admin.minimumSpeedDifference
+        p[Keys.MAX_SPEED_DIFF] = admin.maximumSpeedDifference
+        p[Keys.MIN_POSITION_DIFF] = admin.minimumPositionDifference
+        p[Keys.ACC_DT] = admin.accelerationSamplingTime
         p[Keys.GPS_NO_DATA_TIME] = admin.gpsNoDataTime
         p[Keys.CALIBRATION_DATA_NUMBER] = admin.calibrationDataNumber
     }

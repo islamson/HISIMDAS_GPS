@@ -106,14 +106,14 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                 // token set -> interceptor tüm GET'lere Authorization ekleyecek
                 _trains.value = apiService.getTrainList()
                 _tracks.value  = apiService.getTrackList()
-                _adminConfigParams.value = apiService.getSystemConfig() // TODO! Service in adını değiştirmeyi unutma!
+                _adminConfigParams.value = apiService.getSystemConfig()
 
                 val a = _adminConfigParams.value
                 val merged = AllConfigParams(
-                    minSpeedDiff = a.minSpeedDiff,
-                    maxSpeedDiff = a.maxSpeedDiff,
-                    minPositionDiff = a.minPositionDiff,
-                    accSamplingTime = a.accSamplingTime,
+                    minSpeedDiff = a.minimumSpeedDifference,
+                    maxSpeedDiff = a.maximumSpeedDifference,
+                    minPositionDiff = a.minimumPositionDifference,
+                    accSamplingTime = a.accelerationSamplingTime,
                     gpsNoDataTime = a.gpsNoDataTime,
                     calibrationDataNumber = a.calibrationDataNumber,
                     autoStationTransition = _autoStateTransition.value // kullanıcı tercihini koru

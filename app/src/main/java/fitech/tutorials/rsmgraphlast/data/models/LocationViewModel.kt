@@ -91,6 +91,7 @@ class LocationViewModel(homeViewModel: HomeViewModel) : ViewModel(), SensorEvent
                     lastLocation = currentLocation
                     lastVelocity = null
                 }
+                Log.d("Config params:", "minSpeedDiff:${minSpeedDifference} maksSpeedDiff:${maxSpeedDifference} minPositionDiff:${minPositionDifference} accDt:${accSamplingTime} gpsNoDt:${gpsNoDataTime} calibrationCount:${calibrationDataCount} isAutoEnabled:${homeViewModel.autoStateTransition.value}")
                 if (lastLocation == null) {
                     println("Bu ilk deneme. lastLocation = null burada.")
                     lastLocation = currentLocation
