@@ -1,5 +1,6 @@
 package fitech.tutorials.rsmgraphlast.data
 
+import android.content.Context
 import android.location.Location
 
 object LocationProcessor {
@@ -24,4 +25,70 @@ object LocationProcessor {
         }
         return meanLocation
     }
+
+    /** path içindeki en yakın Location’ı döndürür; yoksa null */
+    fun findNearestPoint(current: Location, path: List<Location>): Location? {
+        if (path.isEmpty()) return null
+        var best: Location? = null
+        var bestDist = Float.MAX_VALUE
+        for (p in path) {
+            val d = current.distanceTo(p)
+            if (d < bestDist) {
+                bestDist = d
+                best = p
+            }
+        }
+        return best
+    }
+
+    /** current’ı en yakına “yapıştırılmış” yeni bir Location olarak döndürür */
+    fun snapToNearest(current: Location, path: List<Location>): Location {
+        val nearest = findNearestPoint(current, path) ?: return current
+        // current’ın zaman/diğer alanlarını koruyup sadece lat/lon’u değiştiriyoruz
+        return Location(current).apply {
+            latitude = nearest.latitude
+            longitude = nearest.longitude
+        }
+    }
+
+    fun loadTrackLocations(context: Context, trackId: Int): List<Location> {
+        val path = "TrackLocationData/$trackId.csv"
+        context.assets.open(path).bufferedReader().use { br ->
+            val lines = br.lineSequence()
+                .filter { it.isNotBlank() }
+                .toList()
+
+            if (lines.isEmpty()) return emptyList()
+
+            // İlk satır başlık, veriler ikinci satırdan itibaren
+            val dataLines = lines.drop(1)
+            if (dataLines.isEmpty()) return emptyList()
+
+            // Ayraç tespiti (ilk veri satırına bak)
+            val probe = dataLines.first()
+            val delim = when {
+                probe.contains(';') -> ';'
+                probe.contains('\t') -> '\t'
+                else -> ',' // default
+            }
+
+            val result = ArrayList<Location>(dataLines.size)
+            for (line in dataLines) {
+                val parts = line.split(delim).map { it.trim() }
+                if (parts.size < 2) continue
+
+                // TR ondalık desteği: "39,92123" → "39.92123"
+                val lat = parts[0].toDoubleOrNull()
+                val lon = parts[1].toDoubleOrNull()
+                if (lat != null && lon != null) {
+                    result += Location("track_csv").apply {
+                        latitude = lat
+                        longitude = lon
+                    }
+                }
+            }
+            return result
+        }
+    }
+
 }

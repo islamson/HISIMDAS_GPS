@@ -118,10 +118,12 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                     calibrationDataNumber = a.calibrationDataNumber,
                     autoStationTransition = _autoStateTransition.value // kullanıcı tercihini koru
                 )
+
                 _allConfigParams.value = merged
                 viewModelScope.launch {
                     app.saveAdminConfig(a)  //Sunucudan gelen config bilgilerine göre localdeki veriler her seferinde override edilir
                 }
+
                 print("Trains: ")
                 trains.value.forEach { train ->
                     print("\nTrain Name: ${train.name}")

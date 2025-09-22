@@ -128,6 +128,7 @@ fun MainScreen(locationViewModel: LocationViewModel, homeViewModel: HomeViewMode
     val dataNumber by locationViewModel.dataNumber.collectAsState()
     val initialStation by homeViewModel.selectedInitialStation.collectAsState()
     val finalStation by homeViewModel.selectedFinalStation.collectAsState()
+    val selectedTrack by homeViewModel.selectedTrack.collectAsState()
 
     val speedLimitPoints by homeViewModel.speedLimitPoints.collectAsState()
     val velocityPoints = remember { mutableStateListOf<Entry>() }
@@ -135,6 +136,10 @@ fun MainScreen(locationViewModel: LocationViewModel, homeViewModel: HomeViewMode
     val isOverLimit = remember { mutableStateOf(false) }
 
     val showCalibrationDialog = isTracking && (dataNumber <= 30)
+
+    LaunchedEffect(selectedTrack!!.id) {
+        locationViewModel.loadTrackFromAssets(context, selectedTrack!!.id)
+    }
 
     LaunchedEffect(speed, position) {
         // Only add points within our x-axis range

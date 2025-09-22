@@ -1,6 +1,7 @@
 package fitech.tutorials.rsmgraphlast.data.models
 
 import android.annotation.SuppressLint
+import android.content.Context
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
@@ -13,9 +14,11 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.android.gms.location.*
 import fitech.tutorials.rsmgraphlast.data.LocationProcessor
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.BufferedWriter
 import java.io.File
 import java.io.FileWriter
@@ -35,6 +38,10 @@ class LocationViewModel(homeViewModel: HomeViewModel) : ViewModel(), SensorEvent
     private var gpsCalibrationCounter = 1
     private var fusedLocationClient: FusedLocationProviderClient? = null
     private var lastLocation: Location? = null
+
+    private var lastProjectedLocation : Location? = null
+    private var trackLocationData : List<Location>? = null
+
     private var isSystemReady : Boolean = false
     private var sensorManager : SensorManager? = null   //SensorManager to get data from AccelerationSensor
     private var location_first : Location? = null
@@ -45,6 +52,7 @@ class LocationViewModel(homeViewModel: HomeViewModel) : ViewModel(), SensorEvent
     private var xPositionTotal : Double = 0.0
     private var yPositionTotal : Double = 0.0
     private var totalDistance = 0f
+    private var totalProjectedDistance = 0f
 
     private var dt : Double = 0.0 // Common time difference in seconds between two data for usage in Gps & acceleration
     private var currentLinearAcc = FloatArray(3)
@@ -63,6 +71,12 @@ class LocationViewModel(homeViewModel: HomeViewModel) : ViewModel(), SensorEvent
     private val calibrationDataCount = homeViewModel.allConfigParams.value.calibrationDataNumber
     private val accSamplingTime = homeViewModel.allConfigParams.value.accSamplingTime
     private val gpsNoDataTime = homeViewModel.allConfigParams.value.gpsNoDataTime
+
+    suspend fun loadTrackFromAssets(context: Context, trackId: Int){
+        trackLocationData = withContext(Dispatchers.IO){
+            locationProcessor.loadTrackLocations(context, trackId)
+        }
+    }
 
     private var csvFile : File? = null
     private var csvWriter : BufferedWriter? = null
@@ -87,8 +101,10 @@ class LocationViewModel(homeViewModel: HomeViewModel) : ViewModel(), SensorEvent
         override fun onLocationResult(result: LocationResult) {
             result.lastLocation?.let { currentLocation ->
                 var currentConvertedLocation = currentLocation
+                var currentProjectedLocation = currentLocation
                 if(gpsCalibrationCounter == 0){
                     lastLocation = currentLocation
+                    lastProjectedLocation = currentLocation
                     lastVelocity = null
                 }
                 Log.d("Config params:", "minSpeedDiff:${minSpeedDifference} maksSpeedDiff:${maxSpeedDifference} minPositionDiff:${minPositionDifference} accDt:${accSamplingTime} gpsNoDt:${gpsNoDataTime} calibrationCount:${calibrationDataCount} isAutoEnabled:${homeViewModel.autoStateTransition.value}")
@@ -103,19 +119,28 @@ class LocationViewModel(homeViewModel: HomeViewModel) : ViewModel(), SensorEvent
 
                 if(location_first != null && location_second != null)
                     currentConvertedLocation = locationProcessor.locationMeanCalculater(location_first!!, location_second!!, location_third!!)
+
+                trackLocationData?.let{
+                    currentProjectedLocation = locationProcessor.findNearestPoint(currentConvertedLocation, it)!!
+                }
+                if(lastProjectedLocation == null)
+                    lastProjectedLocation = currentProjectedLocation
+
                 dt = (currentConvertedLocation.time - lastLocation!!.time) / 1000.0  //Time difference in seconds
                 val positionDifference = lastLocation!!.distanceTo(currentConvertedLocation)
                 currentVelocity = positionDifference.div(dt).times(3.6).toFloat()
 
-                lastVelocity?.let {     //Buraya birşeyler düşün!!! lastVelocity 0 lanıyor 1.turun sonunda çünkü
-                    if(abs(lastVelocity!! - currentVelocity!!) > maxSpeedDifference)
-                        currentVelocity = lastVelocity
-                    else if(abs(lastVelocity!! - currentVelocity!!) < minSpeedDifference){
-                        currentVelocity = lastVelocity
+                lastVelocity?.let {
+                    if(abs(it - currentVelocity!!) > maxSpeedDifference)
+                        currentVelocity = it
+                    else if(abs(it - currentVelocity!!) < minSpeedDifference){
+                        currentVelocity = it
                     }
-                    if(abs(lastVelocity!! - currentVelocity!!) <= maxSpeedDifference){
-                        if(positionDifference >= minPositionDifference)
+                    if(abs(it - currentVelocity!!) <= maxSpeedDifference){
+                        if(positionDifference >= minPositionDifference){
                             totalDistance += positionDifference
+                            totalProjectedDistance += lastProjectedLocation!!.distanceTo(currentProjectedLocation)
+                        }
                     }
                 }
 
@@ -160,7 +185,10 @@ class LocationViewModel(homeViewModel: HomeViewModel) : ViewModel(), SensorEvent
                             else{
                                 closedPositionCounter = 0
                                 _speed.emit(currentVelocity!!)
-                                _position.emit(totalDistance)
+                                if(trackLocationData == null)
+                                    _position.emit(totalDistance)
+                                else
+                                    _position.emit(totalProjectedDistance)
                             }
 
                             val timeStamp = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.getDefault()).format(Date())
@@ -177,7 +205,7 @@ class LocationViewModel(homeViewModel: HomeViewModel) : ViewModel(), SensorEvent
                     totalData++
                     _dataNumber.emit(totalData)
                 }
-
+                lastProjectedLocation = currentProjectedLocation
                 lastLocation!!.set(currentConvertedLocation)
                 if(isGPSReady)
                     lastVelocity = currentVelocity
@@ -191,6 +219,7 @@ class LocationViewModel(homeViewModel: HomeViewModel) : ViewModel(), SensorEvent
         fusedLocationClient = locationClient
         _isTracking.value = true
         lastLocation = null
+        lastProjectedLocation = null
         lastVelocity = null
         totalDistance = 0f
         location_first = null
@@ -305,6 +334,7 @@ class LocationViewModel(homeViewModel: HomeViewModel) : ViewModel(), SensorEvent
                                 Log.d("Closed Position", "counter 0 landı (ivme)")
                             }
                         }
+                        totalProjectedDistance = _position.value
                         totalDistance = _position.value
                         lastVelocity = null
                         isGPSReady = false
