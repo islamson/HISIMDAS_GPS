@@ -3,6 +3,7 @@ package fitech.tutorials.rsmgraphlast.ui
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -419,62 +420,64 @@ fun HomeScreen(
 
         ModalBottomSheet(
             onDismissRequest = { showSkipSheet = false },
-            sheetState = sheetState,
-            dragHandle = { BottomSheetDefaults.DragHandle() }
+            sheetState = sheetState
         ) {
             Column(
-                modifier = Modifier
+                Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 20.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                    .padding(horizontal = 20.dp, vertical = 12.dp)
             ) {
-                Text("Durulmayacak İstasyonlar", style = MaterialTheme.typography.titleMedium)
+                // 1) Scroll olan alan
+                val navBottom = WindowInsets.navigationBars
+                    .asPaddingValues().calculateBottomPadding()
+                val bottomForButtons = 16.dp + 48.dp + 8.dp + 48.dp + navBottom
+                // (üstte 16dp boşluk + Kaydet 48 + arası 8 + İptal 48 + nav bar)
 
-                // Top bar: Tümünü Seç / Kaldır
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                LazyColumn(
+                    modifier = Modifier.weight(1f),            // <-- kalan yükseklik, burada scroll
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    contentPadding = PaddingValues(bottom = bottomForButtons) // <-- son chip gizlenmesin
                 ) {
-                    OutlinedButton(
-                        onClick = {
-                            tempSelection = intermediateStations.map { it }.toSet()
-                        },
-                        modifier = Modifier.weight(1f)
-                    ) { Text("Tümünü Seç") }
+                    item { Text("Durulmayacak İstasyonlar", style = MaterialTheme.typography.titleMedium) }
 
-                    OutlinedButton(
-                        onClick = { tempSelection = emptySet() },
-                        modifier = Modifier.weight(1f)
-                    ) { Text("Tümünü Kaldır") }
-                }
+                    item {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(
+                                onClick = { tempSelection = intermediateStations.toSet() },
+                                modifier = Modifier.weight(1f)
+                            ) { Text("Tümünü Seç") }
+                            OutlinedButton(
+                                onClick = { tempSelection = emptySet() },
+                                modifier = Modifier.weight(1f)
+                            ) { Text("Tümünü Kaldır") }
+                        }
+                    }
 
-                // Chip listesi (soldan sağa, satır kırmalı)
-                if (intermediateStations.isEmpty()) {
-                    Text("Ara istasyon yok.", style = MaterialTheme.typography.bodyMedium)
-                } else {
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        intermediateStations.forEach { st ->
-                            val selected = st in tempSelection
-                            FilterChip(
-                                selected = selected,
-                                onClick = {
-                                    tempSelection = if (selected) tempSelection - st else tempSelection + st
-                                    // recompose için set et
-                                    //tempSelection = tempSelection.toMutableSet()
-                                },
-                                label = { Text(st.name) }
-                            )
+                    if (intermediateStations.isEmpty()) {
+                        item { Text("Ara istasyon yok.", style = MaterialTheme.typography.bodyMedium) }
+                    } else {
+                        item {
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                intermediateStations.forEach { st ->
+                                    val selected = st in tempSelection
+                                    FilterChip(
+                                        selected = selected,
+                                        onClick = {
+                                            tempSelection = if (selected) tempSelection - st else tempSelection + st
+                                        },
+                                        label = { Text(st.name) }
+                                    )
+                                }
+                            }
                         }
                     }
                 }
 
-                Spacer(Modifier.height(8.dp))
-
-                // Kaydet butonu
+                // 2) Altta daima görünen butonlar (sticky)
                 Button(
                     onClick = {
                         skipStations = tempSelection
@@ -484,25 +487,20 @@ fun HomeScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(48.dp)
-                ) {
-                    Text("Kaydet")
-                }
+                ) { Text("Kaydet") }
 
-                // İptal butonu
-                Button(
-                    onClick = {
-                        showSkipSheet = false
-                    },
+                Spacer(Modifier.height(8.dp))
+
+                OutlinedButton(
+                    onClick = { showSkipSheet = false },
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(48.dp)
-                ) {
-                    Text("İptal")
-                }
+                ) { Text("İptal") }
 
-                // Sheet'in alt safe alanı için boşluk
-                Spacer(Modifier.height(10.dp))
+                Spacer(Modifier.height(navBottom)) // alt çentik/gesture alanı
             }
         }
+
     }
 }

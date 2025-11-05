@@ -1,5 +1,7 @@
 package fitech.tutorials.rsmgraphlast.data.models
 
+import AccLogsRequest
+import GpsLogsRequest
 import android.annotation.SuppressLint
 import android.content.Context
 import android.hardware.Sensor
@@ -12,8 +14,17 @@ import android.util.Log
 import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.work.BackoffPolicy
+import androidx.work.Constraints
+import androidx.work.Data
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
+import androidx.work.workDataOf
 import com.google.android.gms.location.*
+import com.google.gson.Gson
 import fitech.tutorials.rsmgraphlast.data.LocationProcessor
+import fitech.tutorials.rsmgraphlast.work.UploadLogsWorker
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -23,15 +34,20 @@ import java.io.BufferedWriter
 import java.io.File
 import java.io.FileWriter
 import java.text.SimpleDateFormat
+import java.time.OffsetDateTime
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
 import java.util.Date
 import java.util.Locale
+import java.util.UUID
+import java.util.concurrent.TimeUnit
 import kotlin.math.abs
 import kotlin.math.absoluteValue
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
 
-class LocationViewModel(homeViewModel: HomeViewModel) : ViewModel(), SensorEventListener {
+class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(), SensorEventListener {
     private var kalmanFilter : KalmanFilter? = null
     private var totalData = 0
     private var isGPSReady = true
@@ -71,6 +87,24 @@ class LocationViewModel(homeViewModel: HomeViewModel) : ViewModel(), SensorEvent
     private val calibrationDataCount = homeViewModel.allConfigParams.value.calibrationDataNumber
     private val accSamplingTime = homeViewModel.allConfigParams.value.accSamplingTime
     private val gpsNoDataTime = homeViewModel.allConfigParams.value.gpsNoDataTime
+
+    //Loglama için tutulacak listler
+    private val logGPSTime = mutableListOf<Double>()
+    private val logGPSLat  = mutableListOf<Double>()
+    private val logGPSLon  = mutableListOf<Double>()
+    private val logGPSAlt  = mutableListOf<Double>()
+    private val logGPSPos  = mutableListOf<Double>()
+    private val logGPSSpeed  = mutableListOf<Double>()
+    private var logGPSDataNumber = 0
+
+    private val logAccTime = mutableListOf<Double>()
+    private val logAccX    = mutableListOf<Double>()
+    private val logAccY    = mutableListOf<Double>()
+    private val logAccZ    = mutableListOf<Double>()
+    private var logAccDataNumber = 0
+
+    // Logları app local database ine kaydetmek için
+    private lateinit var appContext: android.content.Context
 
     suspend fun loadTrackFromAssets(context: Context, trackId: Int){
         trackLocationData = withContext(Dispatchers.IO){
@@ -113,6 +147,8 @@ class LocationViewModel(homeViewModel: HomeViewModel) : ViewModel(), SensorEvent
                     lastLocation = currentLocation
                     return
                 }
+                //Last Location ile Current Location arasındaki dt 0.3 ten küçükse
+                //O veriyi salla! Böylelikle min position difference 0.92 olursa 1 km/h altını elemiş olursun
                 location_first = location_second
                 location_second = location_third
                 location_third = currentLocation
@@ -123,6 +159,7 @@ class LocationViewModel(homeViewModel: HomeViewModel) : ViewModel(), SensorEvent
                 trackLocationData?.let{
                     currentProjectedLocation = locationProcessor.findNearestPoint(currentConvertedLocation, it)!!
                 }
+
                 if(lastProjectedLocation == null)
                     lastProjectedLocation = currentProjectedLocation
 
@@ -132,7 +169,7 @@ class LocationViewModel(homeViewModel: HomeViewModel) : ViewModel(), SensorEvent
 
                 lastVelocity?.let {
                     if(abs(it - currentVelocity!!) > maxSpeedDifference)
-                        currentVelocity = it
+                        return  //If maxSpeedDiff is so high, it means that the current gps data is anomaly, so we pass it and don't save in lastLocation object, if it was saved, the next valid data would be seen as anomaly because of the difference between valid currentLocation and invalid lastLocation
                     else if(abs(it - currentVelocity!!) < minSpeedDifference){
                         currentVelocity = it
                     }
@@ -178,13 +215,16 @@ class LocationViewModel(homeViewModel: HomeViewModel) : ViewModel(), SensorEvent
                             if(lastLocation!!.distanceTo(currentConvertedLocation) < minPositionDifference){
                                 closedPositionCounter++
                                 if(abs(currentVelocity!! - lastVelocity!!) > minSpeedDifference)
-                                    _speed.emit(currentVelocity!!)
+                                    if(currentVelocity!! <= 220f)
+                                        _speed.emit(currentVelocity!!)
                                 if(closedPositionCounter >= 8)
                                     _speed.emit(0f)
                             }
+
                             else{
                                 closedPositionCounter = 0
-                                _speed.emit(currentVelocity!!)
+                                if(currentVelocity!! <= 220f)
+                                    _speed.emit(currentVelocity!!)
                                 if(trackLocationData == null)
                                     _position.emit(totalDistance)
                                 else
@@ -197,6 +237,15 @@ class LocationViewModel(homeViewModel: HomeViewModel) : ViewModel(), SensorEvent
                                 newLine()
                                 flush()
                             }
+
+                            //Loglama için current data ların listlere aktarımı
+                            logGPSSpeed.add(_speed.value.toDouble())
+                            logGPSPos.add(_position.value.toDouble())
+                            logGPSAlt.add(currentConvertedLocation.altitude)
+                            logGPSLat.add(currentConvertedLocation.latitude)
+                            logGPSLon.add(currentConvertedLocation.longitude)
+                            logGPSTime.add(System.currentTimeMillis().toDouble() / 1000.0)
+                            logGPSDataNumber++
                         }
                         gpsCalibrationCounter++
                         if(gpsCalibrationCounter > 3)
@@ -208,14 +257,14 @@ class LocationViewModel(homeViewModel: HomeViewModel) : ViewModel(), SensorEvent
                 lastProjectedLocation = currentProjectedLocation
                 lastLocation!!.set(currentConvertedLocation)
                 if(isGPSReady)
-                    lastVelocity = currentVelocity
+                    lastVelocity = _speed.value
             }
             // If speed difference is too large, ignore this location update
         }
     }
 
     @SuppressLint("MissingPermission")
-    fun startTracking(locationClient: FusedLocationProviderClient, sensorManager: SensorManager) {
+    fun startTracking(locationClient: FusedLocationProviderClient, sensorManager: SensorManager, context: Context) {
         fusedLocationClient = locationClient
         _isTracking.value = true
         lastLocation = null
@@ -228,6 +277,7 @@ class LocationViewModel(homeViewModel: HomeViewModel) : ViewModel(), SensorEvent
         totalData = 0
         _dataNumber.value = 0
         this.sensorManager = sensorManager
+        appContext = context.applicationContext
 
         val linearAccSensor = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)
         val rotationVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
@@ -270,8 +320,90 @@ class LocationViewModel(homeViewModel: HomeViewModel) : ViewModel(), SensorEvent
         csvFile = null
         _isTracking.value = false
         fusedLocationClient?.removeLocationUpdates(locationCallback)
-        this.sensorManager!!.unregisterListener(this)
+        this.sensorManager?.unregisterListener(this)
         isSystemReady = false
+
+        // 1) createdAt oluştur (UTC, saniye precision)
+        val dateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+        val createdAtUtc: String = OffsetDateTime.now(ZoneOffset.UTC).format(dateTimeFormatter)
+
+        // 2) Gövdeleri hazırla (Mevcut listeleri kullanıyoruz)
+        val gpsBody = DasLogsGps(
+            createdAt = createdAtUtc,
+            dataNumber = logGPSDataNumber,
+            time = logGPSTime.toList(),
+            latitude = logGPSLat.toList(),
+            longitude = logGPSLon.toList(),
+            altitude = logGPSAlt.toList(),
+            position = logGPSPos.toList(),
+            speed = logGPSSpeed.toList()
+        )
+        val accBody = DasLogsAcc(
+            createdAt = createdAtUtc,
+            dataNumber = logAccDataNumber,
+            time = logAccTime.toList(),
+            axisX = logAccX.toList(),
+            axisY = logAccY.toList(),
+            axisZ = logAccZ.toList()
+        )
+
+        // 3) JSON'a yaz (internal storage)
+        val logsDir = File(appContext.filesDir, "logs")
+        if (!logsDir.exists()) logsDir.mkdirs()
+
+        val gson = Gson()
+        val gpsFile = File(logsDir, "gps_${UUID.randomUUID()}.json")
+        val accFile = File(logsDir, "acc_${UUID.randomUUID()}.json")
+
+        gpsFile.writeText(gson.toJson(GpsLogsRequest(gpsBody)))
+        accFile.writeText(gson.toJson(AccLogsRequest(accBody)))
+
+        // 4) Worker inputları + Constraints + Backoff
+        val token = homeViewModel.currentToken()
+
+        val netConstraints = Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.CONNECTED)
+            .build()
+
+        val gpsInput: Data = workDataOf(
+            UploadLogsWorker.KEY_KIND to "gps",
+            UploadLogsWorker.KEY_FILE_PATH to gpsFile.absolutePath,
+            UploadLogsWorker.KEY_TOKEN to token
+        )
+        val accInput: Data = workDataOf(
+            UploadLogsWorker.KEY_KIND to "acc",
+            UploadLogsWorker.KEY_FILE_PATH to accFile.absolutePath,
+            UploadLogsWorker.KEY_TOKEN to token
+        )
+
+        val gpsReq = OneTimeWorkRequestBuilder<UploadLogsWorker>()
+            .setInputData(gpsInput)
+            .setConstraints(netConstraints)
+            .setBackoffCriteria(
+                BackoffPolicy.EXPONENTIAL,
+                30, TimeUnit.SECONDS
+            )
+            .build()
+
+        val accReq = OneTimeWorkRequestBuilder<UploadLogsWorker>()
+            .setInputData(accInput)
+            .setConstraints(netConstraints)
+            .setBackoffCriteria(
+                BackoffPolicy.EXPONENTIAL,
+                30, TimeUnit.SECONDS
+            )
+            .build()
+
+        // 5) Kuyruğa at
+        WorkManager.getInstance(appContext).enqueue(gpsReq)
+        WorkManager.getInstance(appContext).enqueue(accReq)
+
+        // 6) Buffer temizliği
+        logGPSTime.clear(); logGPSLat.clear(); logGPSLon.clear()
+        logGPSAlt.clear();  logGPSPos.clear(); logGPSSpeed.clear()
+        logAccTime.clear(); logAccX.clear();   logAccY.clear(); logAccZ.clear()
+        logGPSDataNumber = 0
+        logAccDataNumber = 0
     }
 
     override fun onCleared() {
@@ -308,10 +440,14 @@ class LocationViewModel(homeViewModel: HomeViewModel) : ViewModel(), SensorEvent
                 val timeDiffLastLocat = (currentTime - lastLocation!!.time) / 1000.0    //Time difference in seconds between last location and current time
                 dt = (currentAccTime - lastAccTime) / 1_000_000_000.0 //time difference in seconds
                 if(dt > accSamplingTime){
+                    //Calculate speed and position via KalmanFilter
+                    kalmanFilter!!.predict(a_world[0].toDouble(), a_world[1].toDouble(), dt)
+                    val kalmanPredictedSpeed = kalmanFilter!!.getSpeed().toInt()
+                    val kalmanPredictedPosition = kalmanFilter!!.getPosition()
+                    if(abs(kalmanPredictedSpeed - _speed.value) > maxSpeedDifference)
+                        return  //If acc data is invalid, pass it and finishes the function so, data is not saved.
+
                     if(timeDiffLastLocat > gpsNoDataTime) {
-                        kalmanFilter!!.predict(a_world[0].toDouble(), a_world[1].toDouble(), dt)
-                        val kalmanPredictedSpeed = kalmanFilter!!.getSpeed().toInt()
-                        val kalmanPredictedPosition = kalmanFilter!!.getPosition()
                         viewModelScope.launch {
                             //First state is so low position diff
                             //It can because of either so frequent acc data or so low speed (almost 0)
@@ -325,7 +461,7 @@ class LocationViewModel(homeViewModel: HomeViewModel) : ViewModel(), SensorEvent
                                 }
                             }
                             //Second state is remarkable position diff
-                            //However, if speed is so high and speed diff is almost 0, position diff still can be high, so check if speed diff is important or not before changing speed
+                            //However, if speed is high enough and speed diff is almost 0, position diff still can be high, so check if speed diff is important or not before changing speed
                             else if ((kalmanPredictedPosition - _position.value) > minPositionDifference/5f) { //Since data come from acc sensor more frequently, pos difference is less than gps data so we divided min diff to 5
                                 if (abs(_speed.value - kalmanPredictedSpeed) > minSpeedDifference)
                                     _speed.emit(kalmanPredictedSpeed.toFloat())
@@ -349,9 +485,24 @@ class LocationViewModel(homeViewModel: HomeViewModel) : ViewModel(), SensorEvent
                             newLine()
                             flush()
                         }
+                        //Loglama için current data ların listlere aktarımı
+                        logGPSSpeed.add(_speed.value.toDouble())
+                        logGPSPos.add(_position.value.toDouble())
+                        logGPSAlt.add(-1.0)
+                        logGPSLat.add(-1.0)
+                        logGPSLon.add(-1.0)
+                        logGPSTime.add(-timeDiffLastLocat)
+                        logGPSDataNumber++
                     }
                     lastLinearAcc = currentLinearAcc
                     lastAccTime = currentAccTime
+
+                    //Acc Logları için
+                    logAccX.add(a_world[0].toDouble())
+                    logAccY.add(a_world[1].toDouble())
+                    logAccZ.add(a_world[2].toDouble())
+                    logAccTime.add(System.currentTimeMillis().toDouble() / 1000.0)
+                    logAccDataNumber++
                 }
             }
             else{

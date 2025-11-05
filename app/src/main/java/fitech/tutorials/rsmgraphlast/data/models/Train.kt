@@ -6,4 +6,4 @@ data class Train(
     val description: String,
     val createdAt: String,
     val updatedAt: String
-) 
+)

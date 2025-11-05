@@ -2,6 +2,7 @@ package fitech.tutorials.rsmgraphlast.data
 
 import android.content.Context
 import android.location.Location
+import android.util.Log
 
 object LocationProcessor {
     fun latLongToXY(latitude : Double, longitude : Double, originLatitude : Double, originLongitude : Double) : Pair<Double, Double>{
@@ -22,6 +23,7 @@ object LocationProcessor {
             this.latitude = mean_latitude
             this.longitude = mean_longitude
             this.time = third_location.time
+            this.altitude = third_location.altitude
         }
         return meanLocation
     }
@@ -51,8 +53,19 @@ object LocationProcessor {
         }
     }
 
-    fun loadTrackLocations(context: Context, trackId: Int): List<Location> {
-        val path = "TrackLocationData/$trackId.csv"
+    fun loadTrackLocations(context: Context, trackId: Int): List<Location>? {
+        val folder = "TrackLocationData"
+        val fileName = "$trackId.csv"
+
+        // Klasörde böyle bir dosya var mı?
+        val exists = context.assets.list(folder)?.any { it == fileName } == true
+        if (!exists){
+            Log.d("Track Location","Trackte Location Verileri yok")
+            return null
+        }
+
+        val path = "$folder/$fileName"
+
         context.assets.open(path).bufferedReader().use { br ->
             val lines = br.lineSequence()
                 .filter { it.isNotBlank() }

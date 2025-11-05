@@ -43,6 +43,9 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         .build()
         .create(ApiService::class.java)
 
+    val api: ApiService
+        get() = apiService
+
     private val _trains = MutableStateFlow<List<Train>>(emptyList())
     val trains: StateFlow<List<Train>> = _trains
 
@@ -152,6 +155,8 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    // Worker'a token geçebilmek için
+    fun currentToken(): String? = token
 
     fun selectTrain(train: Train) {
         _selectedTrain.value = train

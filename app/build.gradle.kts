@@ -85,7 +85,8 @@ dependencies {
     implementation(libs.ejml.simple)
 
     //Library to store parameters in local memory
-    implementation (libs.androidx.datastore.preferences) // veya en günceli
+    implementation (libs.androidx.datastore.preferences)
+    implementation(libs.androidx.work.runtime.ktx) // veya en günceli
 
 
     testImplementation(libs.junit)

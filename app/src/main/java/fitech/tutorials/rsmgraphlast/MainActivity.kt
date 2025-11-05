@@ -206,7 +206,7 @@ fun MainScreen(locationViewModel: LocationViewModel, homeViewModel: HomeViewMode
                     onClick = {
                         if (!isTracking) {
                             velocityPoints.clear()
-                            locationViewModel.startTracking(LocationServices.getFusedLocationProviderClient(context), sensorManager)
+                            locationViewModel.startTracking(LocationServices.getFusedLocationProviderClient(context), sensorManager, context)
                             velocityPoints.clear()
                         }
                     },
@@ -279,7 +279,7 @@ private fun VelocityBadge(
     val scale by if (isOverLimit) {
         infinite.animateFloat(
             initialValue = 1.0f,
-            targetValue = 1.12f,
+            targetValue = 1.5f,
             animationSpec = infiniteRepeatable(
                 animation = tween(700, easing = FastOutSlowInEasing),
                 repeatMode = RepeatMode.Reverse
@@ -292,7 +292,7 @@ private fun VelocityBadge(
     val glowAlpha by if (isOverLimit) {
         infinite.animateFloat(
             initialValue = 0.0f,
-            targetValue = 0.35f,
+            targetValue = 0.40f,
             animationSpec = infiniteRepeatable(
                 animation = tween(700, easing = LinearEasing),
                 repeatMode = RepeatMode.Reverse
@@ -304,8 +304,8 @@ private fun VelocityBadge(
     // Spotlight yarıçapı (dp cinsinden)
     val glowRadiusDp by if (isOverLimit) {
         infinite.animateFloat(
-            initialValue = 50f,
-            targetValue = 80f,
+            initialValue = 300f,
+            targetValue = 1000f,
             animationSpec = infiniteRepeatable(
                 animation = tween(700, easing = FastOutSlowInEasing),
                 repeatMode = RepeatMode.Reverse
