@@ -9,6 +9,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.graphics.Color as ComposeColor
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -19,6 +20,7 @@ import com.github.mikephil.charting.components.XAxis
 import com.github.mikephil.charting.data.Entry
 import com.github.mikephil.charting.data.LineData
 import com.github.mikephil.charting.data.LineDataSet
+import fitech.tutorials.rsmgraphlast.R
 
 @Composable
 fun SpeedChart(
@@ -32,7 +34,7 @@ fun SpeedChart(
     var autoCenter by remember { mutableStateOf(true) }
     var showRecenter by remember { mutableStateOf(false) }
 
-    Box(modifier = Modifier.fillMaxSize())
+    Box(modifier = modifier.fillMaxSize())
     {
         Column(
             modifier = modifier.fillMaxSize()
@@ -82,10 +84,8 @@ fun SpeedChart(
                             granularity = 10f
                             labelRotationAngle = 0f
                             isGranularityEnabled = false
-                            axisMaximum =
-                                finalStationBerthing    //max(initialStationBerthing, finalStationBerthing).toFloat()
-                            axisMinimum =
-                                initialStationBerthing  //min(initialStationBerthing, finalStationBerthing).toFloat()
+                            axisMaximum = finalStationBerthing    //max(initialStationBerthing, finalStationBerthing).toFloat()
+                            axisMinimum = initialStationBerthing  //min(initialStationBerthing, finalStationBerthing).toFloat()
                             setLabelCount(14)
                             gridColor = Color.LTGRAY
                             axisLineColor = Color.BLACK
@@ -108,7 +108,6 @@ fun SpeedChart(
                         isAutoScaleMinMaxEnabled = false
                         axisRight.isEnabled = false
 
-                        // === EKLENDİ: Kullanıcı pan/zoom algılayıp autoCenter'ı kapatıyoruz ===
                         onChartGestureListener =
                             object : com.github.mikephil.charting.listener.OnChartGestureListener {
                                 override fun onChartGestureStart(
@@ -177,15 +176,18 @@ fun SpeedChart(
                     // === Oto-merkezleme (yalnızca X ekseni) ===
                     val lastX = speedPoints.lastOrNull()?.x
                     if (autoCenter && lastX != null) {
+                        // 1) Tüm zoom/pan'ı sıfırla (X+Y)
+                        chart.fitScreen()
+
+                        // 2) Y eksenini başlangıç ölçeğine getir (sabit kullanıyorsan)
+                        chart.axisLeft.axisMinimum = 0f
+                        chart.axisLeft.axisMaximum = 120f
+
+                        // 3) X’te 800 m pencereyi yeniden kur
                         val windowMin = lastX - 400f
                         val windowMax = lastX + 400f
-
                         chart.xAxis.axisMinimum = windowMin
                         chart.xAxis.axisMaximum = windowMax
-
-                        // İstersen görünür aralığı da 800 m'ye sabitle:
-                        // chart.setVisibleXRangeMaximum(800f)
-                        // chart.moveViewToX(lastX) // viewport’u son noktaya hizala (opsiyonel)
                     }
 
                     chart.invalidate()
@@ -214,17 +216,27 @@ fun SpeedChart(
             }
         }
         if (showRecenter) {
-            androidx.compose.material3.FloatingActionButton(
+            androidx.compose.material3.ExtendedFloatingActionButton(
                 onClick = {
                     autoCenter = true
                     showRecenter = false
                 },
+                icon = {
+                    androidx.compose.material3.Icon(painter = painterResource(R.drawable.center_icon), contentDescription = "Center")
+                },
+                text = {Text("Ortala") },
+                containerColor = ComposeColor(0xDD2A2B2E),
+                contentColor = ComposeColor.White,           // ikon + yazı rengi
                 modifier = Modifier
-                    .align(alignment = Alignment.BottomEnd)  // Artık geçerli, BoxScope içindeyiz
-                    .padding(16.dp)
-            ) {
-                Text("Ortala")
-            }
+                    .align(Alignment.BottomEnd)              // BoxScope içindeyiz
+                    .padding(16.dp),
+                elevation = androidx.compose.material3.FloatingActionButtonDefaults.elevation(
+                    defaultElevation = 0.dp,
+                    pressedElevation = 0.dp,
+                    focusedElevation = 0.dp,
+                    hoveredElevation = 0.dp
+                )
+            )
         }
     }
 }
