@@ -1,7 +1,7 @@
 package fitech.tutorials.rsmgraphlast.data.models
 
 data class AllConfigParams(
-    val minSpeedDiff: Float = 1f,
+    val minSpeedDiff: Float = 3f,
     val maxSpeedDiff: Float = 35f,
     val minPositionDiff: Float = 1f,
     val accSamplingTime: Double = 0.2,

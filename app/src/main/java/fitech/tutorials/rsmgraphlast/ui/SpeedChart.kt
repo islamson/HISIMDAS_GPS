@@ -1,6 +1,7 @@
 package fitech.tutorials.rsmgraphlast.ui
 
 import android.graphics.Color
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.MaterialTheme
@@ -20,14 +21,22 @@ import com.github.mikephil.charting.components.XAxis
 import com.github.mikephil.charting.data.Entry
 import com.github.mikephil.charting.data.LineData
 import com.github.mikephil.charting.data.LineDataSet
+import com.github.mikephil.charting.interfaces.datasets.ILineDataSet
 import fitech.tutorials.rsmgraphlast.R
+import kotlin.math.max
+import kotlin.math.min
 
 @Composable
 fun SpeedChart(
     speedPoints: List<Entry>,
     speedLimits: List<Entry>,
-    initialStationBerthing: Float,
-    finalStationBerthing: Float,
+    tracklineStart: Float,
+    tracklineEnd: Float,
+    initialBerthing: Float,
+    finalBerthing: Float,
+    dasProfile: List<Entry>,
+    coastingBand: Pair<Float, Float>?,
+    direction: String,
     modifier: Modifier = Modifier
 )
 {
@@ -46,7 +55,7 @@ fun SpeedChart(
                     .padding(8.dp),
                 horizontalArrangement = Arrangement.SpaceEvenly
             ) {
-                LegendItem("DASProfile", ComposeColor.Green)
+                LegendItem("DASProfile", ComposeColor.Blue)
                 LegendItem("Speed Limit", ComposeColor.Red)
                 LegendItem("Train Speed", ComposeColor.Black)
             }
@@ -77,6 +86,7 @@ fun SpeedChart(
                         setScaleEnabled(true)
                         setPinchZoom(true)
                         setDrawGridBackground(false)
+
                         // Configure X axis
                         xAxis.apply {
                             position = XAxis.XAxisPosition.BOTTOM
@@ -84,8 +94,8 @@ fun SpeedChart(
                             granularity = 10f
                             labelRotationAngle = 0f
                             isGranularityEnabled = false
-                            axisMaximum = finalStationBerthing    //max(initialStationBerthing, finalStationBerthing).toFloat()
-                            axisMinimum = initialStationBerthing  //min(initialStationBerthing, finalStationBerthing).toFloat()
+                            axisMaximum = if(direction == "West to East") max(initialBerthing, finalBerthing) + 200 else -min(initialBerthing, finalBerthing) + tracklineStart + tracklineEnd + 200
+                            axisMinimum = if(direction == "West to East") min(initialBerthing, finalBerthing) - 200 else -max(initialBerthing, finalBerthing) + tracklineStart + tracklineEnd - 200
                             setLabelCount(14)
                             gridColor = Color.LTGRAY
                             axisLineColor = Color.BLACK
@@ -95,8 +105,6 @@ fun SpeedChart(
                         // Configure Y axis
                         axisLeft.apply {
                             setDrawGridLines(true)
-                            axisMinimum = 0f
-                            axisMaximum = 120f
                             granularity = 20f
                             isGranularityEnabled = false
                             setLabelCount(7)
@@ -155,7 +163,83 @@ fun SpeedChart(
                     }
                 },
                 update = { chart ->
-                    val velocityDataSet = LineDataSet(speedPoints, "Speed").apply {
+                    val absLow  = minOf(initialBerthing, finalBerthing)
+                    val absHigh = maxOf(initialBerthing, finalBerthing)
+
+                    val sortedLimits = speedLimits.sortedBy { it.x }
+
+                    fun stepLimitAt(x: Float): Float {
+                        if (sortedLimits.isEmpty()) return 0f
+                        var last = sortedLimits.first().y
+                        for (e in sortedLimits) {
+                            if (e.x <= x) last = e.y else break
+                        }
+                        return last
+                    }
+
+                    val candidates = mutableListOf<Float>()
+                    candidates += stepLimitAt(absLow)
+                    for (e in sortedLimits) {
+                        if (e.x in absLow..absHigh) candidates += e.y
+                    }
+
+                    val maxLimit = candidates.maxOrNull() ?: 150f
+
+                    var yMax = maxLimit * 1.10f
+                    fun ceilTo(step: Float, v: Float) = kotlin.math.ceil(v / step) * step
+                    yMax = ceilTo(10f, if(yMax > (speedPoints.lastOrNull()?.y ?: 0f)) yMax else ((speedPoints.lastOrNull()?.y ?: 0f) * 1.10f))
+
+                    val isE2W = direction == "East to West"
+                    val xStart = minOf(tracklineStart, tracklineEnd)
+                    val xEnd   = maxOf(tracklineStart, tracklineEnd)
+                    println("Trackline start: ${tracklineStart}, tracklineEnd: ${tracklineEnd}")
+                    Log.d("YMAX", "speedLimits size=${speedLimits.size} maxLimit=$maxLimit yMax=$yMax")
+
+                    fun chartX(absX: Float): Float = if (!isE2W) absX else (xStart + xEnd - absX)
+
+                    val segMinAbs = minOf(initialBerthing, finalBerthing) - 200f
+                    val segMaxAbs = maxOf(initialBerthing, finalBerthing) + 200f
+
+                    val segMinChart = minOf(chartX(segMinAbs), chartX(segMaxAbs))
+                    val segMaxChart = maxOf(chartX(segMinAbs), chartX(segMaxAbs))
+
+                    chart.xAxis.axisMinimum = segMinChart
+                    chart.xAxis.axisMaximum = segMaxChart
+                    chart.xAxis.setLabelCount(14, true)
+                    chart.axisLeft.axisMaximum = yMax
+                    chart.axisLeft.axisMinimum = 0f
+
+
+                    fun mirrorX(x: Float): Float = xStart + xEnd - x
+                    fun transform(list: List<Entry>): List<Entry> {
+                        if (!isE2W) return list
+                        return list.map { e -> Entry(mirrorX(e.x), e.y) }
+                    }
+
+                    val lineDataSets = mutableListOf<ILineDataSet>()
+
+                    // Coasting band varsa ekle
+                    val band = coastingBand
+
+                    band?.let {
+                        lineDataSets += buildCoastingBandDataSet(it, yMax = yMax)
+                    }
+
+
+                    chart.xAxis.valueFormatter = object : com.github.mikephil.charting.formatter.ValueFormatter() {
+                        override fun getAxisLabel(value: Float, axis: com.github.mikephil.charting.components.AxisBase?): String {
+                            return if (!isE2W) {
+                                value.toInt().toString()
+                            } else {
+                                // value (artan) -> label (azalan)
+                                val inverted = xStart + xEnd - value
+                                inverted.toInt().toString()
+
+                            }
+                        }
+                    }
+
+                    val velocityDataSet = LineDataSet(transform(speedPoints), "Speed").apply {
                         color = Color.BLACK
                         setDrawCircles(false)
                         setDrawValues(false)
@@ -163,7 +247,7 @@ fun SpeedChart(
                         mode = LineDataSet.Mode.CUBIC_BEZIER
                     }
 
-                    val speedLimitDataSet = LineDataSet(speedLimits, "Speed Limit").apply {
+                    val speedLimitDataSet = LineDataSet(transform(speedLimits), "Speed Limit").apply {
                         color = Color.RED
                         setDrawCircles(false)
                         setDrawValues(false)
@@ -171,23 +255,34 @@ fun SpeedChart(
                         mode = LineDataSet.Mode.LINEAR
                     }
 
-                    chart.data = LineData(velocityDataSet, speedLimitDataSet)
+                    // DASProfile (All-Out/Coasting profili)
+                    val dasDataSet = LineDataSet(dasProfile, "DASProfile").apply {
+                        color = Color.BLUE
+                        setDrawCircles(false)
+                        setDrawValues(false)
+                        lineWidth = 2f
+                        mode = LineDataSet.Mode.LINEAR
+                    }
+
+                    lineDataSets.add(velocityDataSet)
+                    lineDataSets.add(speedLimitDataSet)
+                    lineDataSets.add(dasDataSet)
+
+                    chart.data = LineData(lineDataSets)
 
                     // === Oto-merkezleme (yalnızca X ekseni) ===
                     val lastX = speedPoints.lastOrNull()?.x
+
                     if (autoCenter && lastX != null) {
                         // 1) Tüm zoom/pan'ı sıfırla (X+Y)
                         chart.fitScreen()
-
-                        // 2) Y eksenini başlangıç ölçeğine getir (sabit kullanıyorsan)
                         chart.axisLeft.axisMinimum = 0f
-                        chart.axisLeft.axisMaximum = 120f
-
+                        chart.axisLeft.axisMaximum = yMax
                         // 3) X’te 800 m pencereyi yeniden kur
-                        val windowMin = lastX - 400f
-                        val windowMax = lastX + 400f
-                        chart.xAxis.axisMinimum = windowMin
-                        chart.xAxis.axisMaximum = windowMax
+                        //val windowMin = lastX - 400f
+                        //val windowMax = lastX + 400f
+                        //chart.xAxis.axisMinimum = windowMin
+                        //chart.xAxis.axisMaximum = windowMax
                     }
 
                     chart.invalidate()
@@ -264,3 +359,35 @@ private fun LegendItem(
         )
     }
 }
+
+/** Coasting band dataseti üretir (LineChart için).
+ *  yMax: grafikteki üst hız sınırın (ör. 140 km/h)
+ */
+fun buildCoastingBandDataSet(
+    band: Pair<Float, Float>,
+    yMax: Float
+): LineDataSet {
+    val (x0, x1) = band
+    val pts = listOf(
+        Entry(x0, 0f),
+        Entry(x0, yMax),
+        Entry(x1, yMax),
+        Entry(x1, 0f)
+    )
+
+    return LineDataSet(pts, "Coasting Region").apply {
+        setDrawValues(false)
+        setDrawCircles(false)
+        mode = com.github.mikephil.charting.data.LineDataSet.Mode.LINEAR
+        lineWidth = 0f                  // Hat görünmesin
+        color = android.graphics.Color.TRANSPARENT
+        setDrawFilled(true)
+        fillAlpha = 50                  // yarı saydam
+        fillColor = android.graphics.Color.GREEN
+        // 0 tabanına doldurur; ekstra FillFormatter gerekmez.
+    }
+}
+
+
+
+

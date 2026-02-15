@@ -5,6 +5,7 @@ import android.hardware.SensorManager
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
@@ -21,7 +22,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -37,13 +39,19 @@ import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
 import com.github.mikephil.charting.data.Entry
 import com.google.android.gms.location.LocationServices
 import fitech.tutorials.rsmgraphlast.ui.HomeScreen
 import fitech.tutorials.rsmgraphlast.data.models.HomeViewModel
 import fitech.tutorials.rsmgraphlast.data.models.LocationVMFactory
 import fitech.tutorials.rsmgraphlast.data.models.LocationViewModel
+import fitech.tutorials.rsmgraphlast.data.models.Station
 import fitech.tutorials.rsmgraphlast.ui.CalibrationDialog
+import fitech.tutorials.rsmgraphlast.ui.LoginScreen
+import fitech.tutorials.rsmgraphlast.ui.SegmentControlBar
 import fitech.tutorials.rsmgraphlast.ui.SpeedChart
 import fitech.tutorials.rsmgraphlast.ui.theme.RSMGRAPHLASTTheme
 
@@ -99,19 +107,54 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             RSMGRAPHLASTTheme {
-                var showHomeScreen by remember { mutableStateOf(true) }
+                val navController = rememberNavController()
 
-                Surface(
-                    modifier = Modifier.fillMaxSize(),
-                    color = MaterialTheme.colorScheme.background
-                ) {
-                    if (showHomeScreen) {
-                        HomeScreen(
-                            homeViewModel = homeViewModel,
-                            onContinue = { showHomeScreen = false }
+                val isLoggedIn by homeViewModel.isLoggedIn.collectAsState()
+                val isLoading by homeViewModel.isLoggingIn.collectAsState()
+                val loginError by homeViewModel.loginError.collectAsState()
+
+                // login başarılı olunca otomatik main'e geç
+                LaunchedEffect(isLoggedIn) {
+                    if (isLoggedIn) {
+                        navController.navigate("main") {
+                            popUpTo("login") { inclusive = true }
+                            launchSingleTop = true
+                        }
+                    }
+                }
+                var showHomeScreen by remember { mutableStateOf(true) }
+                NavHost(navController = navController, startDestination = "login") {
+                    composable("login") {
+                        LoginScreen(
+                            isLoading = isLoading,
+                            error = loginError,
+                            onLogin = { u, p -> homeViewModel.loginAndLoad(u, p) }
                         )
-                    } else {
-                        MainScreen(locationViewModel, homeViewModel, sensorManager!!)
+                    }
+
+                    composable("main") {
+                        Surface(
+                            modifier = Modifier.fillMaxSize(),
+                            color = MaterialTheme.colorScheme.background
+                        ) {
+                            if (showHomeScreen) {
+                                HomeScreen(
+                                    homeViewModel = homeViewModel,
+                                    onContinue = { showHomeScreen = false },
+                                    onSignOut = {
+                                        homeViewModel.logout()
+                                        showHomeScreen = true
+                                        homeViewModel.stopCoastingSimLoop()
+                                        navController.navigate("login") {
+                                            popUpTo("main") { inclusive = true }
+                                            launchSingleTop = true
+                                        }
+                                    }
+                                )
+                            } else {
+                                MainScreen(locationViewModel, homeViewModel, sensorManager!!, onBackToHome = { showHomeScreen = true } )
+                            }
+                        }
                     }
                 }
             }
@@ -120,57 +163,146 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun MainScreen(locationViewModel: LocationViewModel, homeViewModel: HomeViewModel, sensorManager : SensorManager) {
+fun MainScreen(locationViewModel: LocationViewModel, homeViewModel: HomeViewModel, sensorManager : SensorManager, onBackToHome: () -> Unit) {
     val context = LocalContext.current
     val speed by locationViewModel.speed.collectAsState()
     val position by locationViewModel.position.collectAsState()
     val isTracking by locationViewModel.isTracking
     val dataNumber by locationViewModel.dataNumber.collectAsState()
+    val absCenterPos by locationViewModel.absCenterPos.collectAsState()
     val initialStation by homeViewModel.selectedInitialStation.collectAsState()
     val finalStation by homeViewModel.selectedFinalStation.collectAsState()
+    val segInit by homeViewModel.segmentInitialStation.collectAsState()
+    val segFinal by homeViewModel.segmentFinalStation.collectAsState()
     val selectedTrack by homeViewModel.selectedTrack.collectAsState()
-
+    val allConfigParams by homeViewModel.allConfigParams.collectAsState()
     val speedLimitPoints by homeViewModel.speedLimitPoints.collectAsState()
+    val direction by homeViewModel.selectedDirection.collectAsState()
+    val dasProfile by homeViewModel.dasProfilePoints.collectAsState()
+    val coastingData by homeViewModel.coastingBand.collectAsState()
     val velocityPoints = remember { mutableStateListOf<Entry>() }
     val speedCircleColor = remember { mutableStateOf(Color.Black) }
     val isOverLimit = remember { mutableStateOf(false) }
 
-    val showCalibrationDialog = isTracking && (dataNumber <= 30)
+    // Segment bitti mi? (Continue bir defalık açılacak)
+    var pendingContinue by remember { mutableStateOf(false) }
+
+    // Hangi istasyonda segment bitti? (genelde bir önceki segmentin final'i)
+    var arrivedStation by remember { mutableStateOf<Station?>(null) }
+
+    val showCalibrationDialog = isTracking && (dataNumber <= allConfigParams.calibrationDataNumber)
+
+    val train by homeViewModel.selectedTrain.collectAsState()
+    val dir = direction ?: "West to East"
+    val sign = if (dir == "West to East") 1 else -1
+
+    val activeFinal = remember(pendingContinue, segFinal, arrivedStation) {
+        // pendingContinue true ise artık varış istasyonunu kilitle
+        if (pendingContinue) arrivedStation else segFinal
+    }
+
+    val targetCenter = remember(activeFinal, train, dir) {
+        if (activeFinal == null || train == null) null
+        else (activeFinal!!.berthingPosition + (sign * train!!.totalLength / 2.0)).toFloat()
+    }
+
+    val arrived = remember(absCenterPos, targetCenter, dir) {
+        val t = targetCenter ?: return@remember false
+        if (dir == "West to East") absCenterPos >= (t - 10f)
+        else absCenterPos <= (t + 10f)
+    }
+
 
     LaunchedEffect(selectedTrack!!.id) {
         locationViewModel.loadTrackFromAssets(context, selectedTrack!!.id)
     }
 
-    LaunchedEffect(speed, position) {
-        // Only add points within our x-axis range
-        velocityPoints.add(Entry(position + initialStation!!.berthingPosition, speed))  // Convert position to km for x-axis
-        println("En son grafiğe giden hız:${speed}, Position:${position}")
-        var speedLimit : Float? = null
-        for (i in 0..speedLimitPoints.size-1){
-            if(speedLimitPoints[i].x > position + initialStation!!.berthingPosition){
-                if(i >= 1)
-                    speedLimit = speedLimitPoints[i - 1].y
-                break
-            }
-            else if(speedLimitPoints[i].x == position + initialStation!!.berthingPosition){
-                speedLimit = speedLimitPoints[i].y
-                break
-            }
-        }
-        if(speedLimit != null){
-            if(speed > speedLimit){
-                speedCircleColor.value = Color.Red
-                isOverLimit.value = true
-            }
-            else{
-                speedCircleColor.value = Color.Black
-                isOverLimit.value = false
-            }
+    LaunchedEffect(arrived) {
+        if (isTracking && arrived && !pendingContinue) {
+            pendingContinue = true
+            arrivedStation = segFinal          // segmenti hangi istasyonda bitirdik
+            homeViewModel.stopCoastingSimLoop()
         }
     }
 
+
+
+    LaunchedEffect(speed, absCenterPos) {
+        velocityPoints.add(Entry(absCenterPos, speed))
+        println("En son grafiğe giden hız:${speed}, Position:${position}")
+
+        val speedLimit = homeViewModel.speedLimitAt(absCenterPos)
+        if(speed > speedLimit){
+            speedCircleColor.value = Color.Red
+            isOverLimit.value = true
+        }
+        else{
+            speedCircleColor.value = Color.Black
+            isOverLimit.value = false
+        }
+    }
+
+    val stationList = remember(selectedTrack, direction) {
+        if (selectedTrack == null || direction == null) emptyList()
+        else if (direction == "West to East") selectedTrack!!.stations
+        else selectedTrack!!.stationsInverted
+    }
+
+    val startLabel = if (!isTracking) "Start" else "Continue"
+    val startEnabled = (!isTracking) || (isTracking && pendingContinue)
+
+
     Box(modifier = Modifier.fillMaxSize()){
-        CalibrationDialog(showCalibrationDialog, dataNumber/30f)
+        var showStopWarning by remember { mutableStateOf(false) }
+
+        BackHandler(enabled = true) {
+            if (isTracking) showStopWarning = true
+            else onBackToHome()
+        }
+
+        if (showStopWarning) {
+            AlertDialog(
+                onDismissRequest = { showStopWarning = false },
+                title = { Text("Çıkış yapılamıyor") },
+                text = { Text("Ana ekrandan çıkmadan önce lütfen Stop’a bas ve tracking’i durdur.") },
+                confirmButton = {
+                    TextButton(onClick = { showStopWarning = false }) { Text("Tamam") }
+                }
+            )
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .statusBarsPadding()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            FilledTonalIconButton(
+                onClick = {
+                    if (isTracking) showStopWarning = true
+                    else onBackToHome()
+                },
+                modifier = Modifier.size(44.dp),
+                shape = CircleShape,
+                colors = IconButtonDefaults.filledTonalIconButtonColors(
+                    containerColor = Color(0x66000000),
+                    contentColor = Color.White
+                )
+            ) {
+                Icon(
+                    imageVector = Icons.Default.ArrowBack,
+                    contentDescription = "Back",
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+
+            Spacer(Modifier.width(10.dp))
+
+            Spacer(Modifier.weight(1f))
+        }
+
+        CalibrationDialog(showCalibrationDialog, dataNumber/allConfigParams.calibrationDataNumber.toFloat())
 
         VelocityBadge(
             velocity = speed,
@@ -191,68 +323,85 @@ fun MainScreen(locationViewModel: LocationViewModel, homeViewModel: HomeViewMode
             SpeedChart(
                 speedPoints = velocityPoints,
                 speedLimits = speedLimitPoints,
-                initialStationBerthing = initialStation!!.berthingPosition,
-                finalStationBerthing = finalStation!!.berthingPosition,
+                tracklineStart = selectedTrack!!.tracklineStart,
+                tracklineEnd = selectedTrack!!.tracklineEnd,
+                initialBerthing = initialStation!!.berthingPosition,
+                finalBerthing = finalStation!!.berthingPosition,
+                dasProfile = dasProfile,
+                coastingBand = coastingData,
+                direction = direction!!,
                 modifier = Modifier.weight(1f)
             )
 
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 2.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly
-            ) {
-                Button(
-                    onClick = {
-                        if (!isTracking) {
-                            velocityPoints.clear()
-                            locationViewModel.startTracking(LocationServices.getFusedLocationProviderClient(context), sensorManager, context)
-                            velocityPoints.clear()
-                        }
-                    },
-                    enabled = !isTracking,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primary,
-                        contentColor = Color.White
-                    ),
-                    contentPadding = PaddingValues(horizontal = 15.dp, vertical = 4.dp)
-                ) {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(2.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.PlayArrow,
-                            contentDescription = "Start",
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Text("Start")
-                    }
-                }
+            SegmentControlBar(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
 
-                Button(
-                    onClick = {
-                        locationViewModel.stopTracking() },
-                    enabled = isTracking,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.error,
-                        contentColor = Color.White
-                    ),
-                    contentPadding = PaddingValues(horizontal = 15.dp, vertical = 4.dp)
-                ) {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(10.dp)
-                                .background(Color.White)
+                stations = stationList,
+                initial = segInit,
+                final = segFinal,
+
+                onSelectInitial = { st ->
+                    homeViewModel.setSegmentInitial(st)
+                    homeViewModel.calculateSpeedLimits()
+                    homeViewModel.fetchAllOutProfileOnce()
+                },
+                onSelectFinal = { st ->
+                    homeViewModel.setSegmentFinal(st)
+                    homeViewModel.calculateSpeedLimits()
+                    homeViewModel.fetchAllOutProfileOnce()
+                },
+
+                onPrev = {
+                    homeViewModel.goPrevSegment()
+                    homeViewModel.calculateSpeedLimits()
+                    homeViewModel.fetchAllOutProfileOnce()
+                },
+                onNext = {
+                    homeViewModel.goNextSegment()
+                    homeViewModel.calculateSpeedLimits()
+                    homeViewModel.fetchAllOutProfileOnce()
+                },
+
+                startEnabled = startEnabled,
+                startLabel = startLabel,
+                onStart = {
+                    if (!isTracking) {
+                        velocityPoints.clear()
+                        locationViewModel.startTracking(
+                            LocationServices.getFusedLocationProviderClient(context),
+                            sensorManager,
+                            context
                         )
-                        Text("Stop")
+                    } else if (pendingContinue) {
+                        // Eğer hala eski segment ekranındaysan: segFinal == arrivedStation
+                        val onFinishedSegmentScreen = (arrivedStation != null && segFinal != null && segFinal!!.id == arrivedStation!!.id)
+
+                        if (onFinishedSegmentScreen) {
+                            // Kullanıcı Nexte basmamışsa, Continue basınca otomatik sonraki segmente geç
+                            homeViewModel.goNextSegment()
+                            homeViewModel.calculateSpeedLimits()
+                            homeViewModel.fetchAllOutProfileOnce()
+                        }
+
+                        velocityPoints.clear()
+                        homeViewModel.resetSegmentTimer()
+
+                        homeViewModel.startCoastingSimLoop(
+                            positionProvider = { absCenterPos },
+                            speedProvider = { speed }
+                        )
+
+                        // Consume
+                        pendingContinue = false
+                        arrivedStation = null
                     }
+                },
+
+                stopEnabled = isTracking,
+                onStop = {
+                    locationViewModel.stopTracking()
                 }
-            }
+            )
         }
     }
 
@@ -265,7 +414,6 @@ private fun VelocityBadge(
     color: Color,
     isOverLimit: Boolean
 ) {
-    // Border rengini yumuşak geçişle animasyonla
     val borderColor by animateColorAsState(
         targetValue = color,
         animationSpec = tween(250),
@@ -275,7 +423,7 @@ private fun VelocityBadge(
     // Limit aşıldığında sonsuz nabız animasyonları
     val infinite = rememberInfiniteTransition(label = "limitPulse")
 
-    // Ölçek (pulse)
+    // Ölçek
     val scale by if (isOverLimit) {
         infinite.animateFloat(
             initialValue = 1.0f,
@@ -317,11 +465,10 @@ private fun VelocityBadge(
     val density = LocalDensity.current
     val glowRadiusPx = with(density) { glowRadiusDp.dp.toPx() }
 
-    // Dış kutu: spotlight’ın taşması için biraz büyük tuval
     Box(
         contentAlignment = Alignment.Center,
         modifier = modifier
-            .size(90.dp) // glow için alan
+            .size(90.dp)
             .drawBehind {
                 if (glowAlpha > 0f) {
                     drawCircle(
@@ -336,7 +483,6 @@ private fun VelocityBadge(
                 }
             }
     ) {
-        // Rozetin kendisi
         Box(
             contentAlignment = Alignment.Center,
             modifier = Modifier

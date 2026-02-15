@@ -26,6 +26,7 @@ import fitech.tutorials.rsmgraphlast.data.models.Station
 fun HomeScreen(
     homeViewModel: HomeViewModel,
     onContinue: () -> Unit,
+    onSignOut: () -> Unit
 ) {
     val trains by homeViewModel.trains.collectAsState()
     val tracks by homeViewModel.tracks.collectAsState()
@@ -384,6 +385,7 @@ fun HomeScreen(
             onClick = {
                 onContinue()
                 homeViewModel.calculateSpeedLimits()
+                homeViewModel.fetchAllOutProfileOnce()
             },
             enabled = selectedTrain != null &&
                     selectedTrack != null &&
