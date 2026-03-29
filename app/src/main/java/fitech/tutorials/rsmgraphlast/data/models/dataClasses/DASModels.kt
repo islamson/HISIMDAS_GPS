@@ -1,9 +1,6 @@
-package fitech.tutorials.rsmgraphlast.data.models
+package fitech.tutorials.rsmgraphlast.data.models.dataClasses
 
 import com.google.gson.annotations.SerializedName
-
-// C# tarafıyla alan adlarını hizalamak için lowerCamelCase kullandım.
-// Backend PascalCase bekliyorsa @SerializedName(...) ekleyebilirsin.
 
 data class DASInput(
     @SerializedName("generalId") val generalId: Int = 1,

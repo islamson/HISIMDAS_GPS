@@ -1,4 +1,4 @@
-package fitech.tutorials.rsmgraphlast.data.models
+package fitech.tutorials.rsmgraphlast.data.models.dataClasses
 
 data class AdminConfigParams(
     val calibrationDataNumber: Int = 30,

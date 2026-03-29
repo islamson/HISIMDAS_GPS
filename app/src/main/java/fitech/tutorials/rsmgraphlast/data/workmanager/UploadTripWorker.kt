@@ -1,6 +1,7 @@
 package fitech.tutorials.rsmgraphlast.work
 
-import DASDriverStatistics
+import DasReferencePointsBundle
+import fitech.tutorials.rsmgraphlast.data.models.dataClasses.DASDriverStatistics
 import android.content.Context
 import android.util.Log
 import androidx.work.CoroutineWorker
@@ -8,8 +9,8 @@ import androidx.work.WorkerParameters
 import com.google.gson.Gson
 import fitech.tutorials.rsmgraphlast.data.api.ApiFactory
 import fitech.tutorials.rsmgraphlast.data.api.DasApiService
-import fitech.tutorials.rsmgraphlast.data.models.DasLogsAcc
-import fitech.tutorials.rsmgraphlast.data.models.DasLogsGps
+import fitech.tutorials.rsmgraphlast.data.models.dataClasses.DasLogsAcc
+import fitech.tutorials.rsmgraphlast.data.models.dataClasses.DasLogsGps
 import okhttp3.ResponseBody
 import retrofit2.Response
 import java.io.File
@@ -22,16 +23,16 @@ class UploadTripWorker(
 ) : CoroutineWorker(appContext, params) {
 
     companion object {
-        // === input keys ===
         const val KEY_GPS_PATH = "gps_path"
         const val KEY_ACC_PATH = "acc_path"
+        const val KEY_REF_PATH = "ref_points_path"
         const val KEY_TOKEN = "token"
 
         const val KEY_DRIVER_ID = "driver_id"
         const val KEY_TRAIN_ID = "train_id"
         const val KEY_TRACK_ID = "track_id"
         const val KEY_GENERAL_ID = "general_id"
-        const val KEY_DIRECTION = "direction" // "West to East" | "East to West" (senin string)
+        const val KEY_DIRECTION = "direction"
 
         private const val BASE_URL = "http://160.75.159.6:3012/api/das/"
         private const val TAG_UP = "UPLOAD_TRIP"
@@ -43,7 +44,11 @@ class UploadTripWorker(
     override suspend fun doWork(): Result {
         val gpsPath = inputData.getString(KEY_GPS_PATH) ?: return Result.success()
         val accPath = inputData.getString(KEY_ACC_PATH) ?: return Result.success()
-        val token = inputData.getString(KEY_TOKEN) // nullable olabilir, ama sende genelde dolu
+        val refPath = inputData.getString(KEY_REF_PATH)
+        val refs = if (refPath != null && File(refPath).exists()) {
+            gson.fromJson(File(refPath).readText(), DasReferencePointsBundle::class.java)
+        } else null
+        val token = inputData.getString(KEY_TOKEN)
 
         val driverId = inputData.getInt(KEY_DRIVER_ID, -1)
         val trainId = inputData.getInt(KEY_TRAIN_ID, -1)
@@ -59,6 +64,7 @@ class UploadTripWorker(
 
         val gpsFile = File(gpsPath)
         val accFile = File(accPath)
+        val refsFile = refPath?.let { File(it) }
 
         // Dosya yoksa kuyruğu asla kilitleme
         if (!gpsFile.exists() || !accFile.exists()) {
@@ -69,13 +75,10 @@ class UploadTripWorker(
         val api: DasApiService = ApiFactory.createDasServiceLong(BASE_URL, token)
 
         return try {
-            // === 1) GPS upload ===
             val gpsLogId = uploadGps(api, gpsFile) ?: return decideRetryOrSuccess("gps upload failed (null id)")
 
-            // === 2) ACC upload ===
             val accLogId = uploadAcc(api, accFile) ?: return decideRetryOrSuccess("acc upload failed (null id)")
 
-            // === 3) Statistics post ===
             val statsBody = buildStatsBody(
                 driverId = driverId,
                 gpsLogId = gpsLogId,
@@ -83,7 +86,10 @@ class UploadTripWorker(
                 generalId = generalId,
                 trainId = trainId,
                 trackId = trackId,
-                direction = direction
+                direction = direction,
+                refSpeed = refs?.referenceSpeed ?: emptyList(),
+                refPos = refs?.referencePosition ?: emptyList(),
+                refTime = refs?.referenceTime ?: emptyList()
             )
             Log.d(TAG_UP, "stats json = ${gson.toJson(statsBody)}")
 
@@ -92,13 +98,12 @@ class UploadTripWorker(
                 // Her şey OK → dosyaları sil
                 safeDelete(gpsFile)
                 safeDelete(accFile)
+                refsFile?.let { safeDelete(it) }
                 Log.d(TAG_UP, "ALL OK gpsLogId=$gpsLogId accLogId=$accLogId")
                 Result.success()
             } else {
                 val code = statsResp.code()
 
-                //val err = safeErr(statsResp.errorBody())
-                //Log.w(TAG_UP, "stats fail code=$code err=$err")
                 val raw = statsResp.errorBody()?.string()
                 Log.e(TAG_UP, "stats fail code=${statsResp.code()} rawError=$raw")
 
@@ -163,7 +168,10 @@ class UploadTripWorker(
         generalId: Int,
         trainId: Int,
         trackId: Int,
-        direction: String
+        direction: String,
+        refSpeed: List<Double>,
+        refPos: List<Double>,
+        refTime: List<Double>
     ): DASDriverStatistics {
         val dirEnum = if (direction == "West to East") 0 else 1
 
@@ -175,9 +183,9 @@ class UploadTripWorker(
             trainId = trainId,
             trackId = trackId,
             tracklineDirection = dirEnum,
-            maxSpeed = 0.0,
-            averageSpeed = 0.0,
-            journeyTime = 0.0
+            referenceSpeed = refSpeed,
+            referencePosition = refPos,
+            referenceTime = refTime
         )
     }
 

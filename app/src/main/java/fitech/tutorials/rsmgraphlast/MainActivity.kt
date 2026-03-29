@@ -1,5 +1,6 @@
 package fitech.tutorials.rsmgraphlast
 
+import MovementAlertBanner
 import android.Manifest
 import android.hardware.SensorManager
 import android.os.Bundle
@@ -22,7 +23,6 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -48,7 +48,7 @@ import fitech.tutorials.rsmgraphlast.ui.HomeScreen
 import fitech.tutorials.rsmgraphlast.data.models.HomeViewModel
 import fitech.tutorials.rsmgraphlast.data.models.LocationVMFactory
 import fitech.tutorials.rsmgraphlast.data.models.LocationViewModel
-import fitech.tutorials.rsmgraphlast.data.models.Station
+import fitech.tutorials.rsmgraphlast.data.models.dataClasses.Station
 import fitech.tutorials.rsmgraphlast.ui.CalibrationDialog
 import fitech.tutorials.rsmgraphlast.ui.LoginScreen
 import fitech.tutorials.rsmgraphlast.ui.SegmentControlBar
@@ -163,6 +163,104 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
+private fun VelocityBadge(
+    velocity: Float,
+    modifier: Modifier = Modifier,
+    color: Color,
+    isOverLimit: Boolean
+) {
+    val borderColor by animateColorAsState(
+        targetValue = color,
+        animationSpec = tween(250),
+        label = "borderColor"
+    )
+
+    // Limit aşıldığında sonsuz nabız animasyonları
+    val infinite = rememberInfiniteTransition(label = "limitPulse")
+
+    // Ölçek
+    val scale by if (isOverLimit) {
+        infinite.animateFloat(
+            initialValue = 1.0f,
+            targetValue = 1.5f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(700, easing = FastOutSlowInEasing),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "scale"
+        )
+    } else remember { mutableStateOf(1.0f) }
+
+    // Spotlight parlaklık (alpha)
+    val glowAlpha by if (isOverLimit) {
+        infinite.animateFloat(
+            initialValue = 0.0f,
+            targetValue = 0.40f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(700, easing = LinearEasing),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "glowAlpha"
+        )
+    } else remember { mutableStateOf(0.0f) }
+
+    // Spotlight yarıçapı (dp cinsinden)
+    val glowRadiusDp by if (isOverLimit) {
+        infinite.animateFloat(
+            initialValue = 300f,
+            targetValue = 1000f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(700, easing = FastOutSlowInEasing),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "glowRadiusDp"
+        )
+    } else remember { mutableStateOf(0f) }
+
+    val density = LocalDensity.current
+    val glowRadiusPx = with(density) { glowRadiusDp.dp.toPx() }
+
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = modifier
+            .size(90.dp)
+            .drawBehind {
+                if (glowAlpha > 0f) {
+                    drawCircle(
+                        brush = Brush.radialGradient(
+                            colors = listOf(Color.Red.copy(alpha = glowAlpha), Color.Transparent),
+                            center = center,
+                            radius = glowRadiusPx
+                        ),
+                        radius = glowRadiusPx,
+                        center = center
+                    )
+                }
+            }
+    ) {
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .graphicsLayer {
+                    scaleX = scale
+                    scaleY = scale
+                }
+                .size(60.dp)
+                .background(MaterialTheme.colorScheme.surface, shape = CircleShape)
+                .border(2.dp, borderColor, CircleShape)
+        ) {
+            Text(
+                text = "${velocity.toInt()}",
+                style = MaterialTheme.typography.bodyMedium,
+                fontSize = 22.sp,
+                color = borderColor
+            )
+        }
+    }
+}
+
+
+@Composable
 fun MainScreen(locationViewModel: LocationViewModel, homeViewModel: HomeViewModel, sensorManager : SensorManager, onBackToHome: () -> Unit) {
     val context = LocalContext.current
     val speed by locationViewModel.speed.collectAsState()
@@ -180,6 +278,7 @@ fun MainScreen(locationViewModel: LocationViewModel, homeViewModel: HomeViewMode
     val direction by homeViewModel.selectedDirection.collectAsState()
     val dasProfile by homeViewModel.dasProfilePoints.collectAsState()
     val coastingData by homeViewModel.coastingBand.collectAsState()
+    val movementHint by homeViewModel.movementHint.collectAsState(initial = null)
     val velocityPoints = remember { mutableStateListOf<Entry>() }
     val speedCircleColor = remember { mutableStateOf(Color.Black) }
     val isOverLimit = remember { mutableStateOf(false) }
@@ -270,6 +369,14 @@ fun MainScreen(locationViewModel: LocationViewModel, homeViewModel: HomeViewMode
                 }
             )
         }
+
+        MovementAlertBanner(
+            text = movementHint,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = 8.dp)
+        )
+
 
         Row(
             modifier = Modifier
@@ -367,6 +474,7 @@ fun MainScreen(locationViewModel: LocationViewModel, homeViewModel: HomeViewMode
                 onStart = {
                     if (!isTracking) {
                         velocityPoints.clear()
+                        homeViewModel.resetTripReferences()
                         locationViewModel.startTracking(
                             LocationServices.getFusedLocationProviderClient(context),
                             sensorManager,
@@ -406,101 +514,3 @@ fun MainScreen(locationViewModel: LocationViewModel, homeViewModel: HomeViewMode
     }
 
 }
-
-@Composable
-private fun VelocityBadge(
-    velocity: Float,
-    modifier: Modifier = Modifier,
-    color: Color,
-    isOverLimit: Boolean
-) {
-    val borderColor by animateColorAsState(
-        targetValue = color,
-        animationSpec = tween(250),
-        label = "borderColor"
-    )
-
-    // Limit aşıldığında sonsuz nabız animasyonları
-    val infinite = rememberInfiniteTransition(label = "limitPulse")
-
-    // Ölçek
-    val scale by if (isOverLimit) {
-        infinite.animateFloat(
-            initialValue = 1.0f,
-            targetValue = 1.5f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(700, easing = FastOutSlowInEasing),
-                repeatMode = RepeatMode.Reverse
-            ),
-            label = "scale"
-        )
-    } else remember { mutableStateOf(1.0f) }
-
-    // Spotlight parlaklık (alpha)
-    val glowAlpha by if (isOverLimit) {
-        infinite.animateFloat(
-            initialValue = 0.0f,
-            targetValue = 0.40f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(700, easing = LinearEasing),
-                repeatMode = RepeatMode.Reverse
-            ),
-            label = "glowAlpha"
-        )
-    } else remember { mutableStateOf(0.0f) }
-
-    // Spotlight yarıçapı (dp cinsinden)
-    val glowRadiusDp by if (isOverLimit) {
-        infinite.animateFloat(
-            initialValue = 300f,
-            targetValue = 1000f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(700, easing = FastOutSlowInEasing),
-                repeatMode = RepeatMode.Reverse
-            ),
-            label = "glowRadiusDp"
-        )
-    } else remember { mutableStateOf(0f) }
-
-    val density = LocalDensity.current
-    val glowRadiusPx = with(density) { glowRadiusDp.dp.toPx() }
-
-    Box(
-        contentAlignment = Alignment.Center,
-        modifier = modifier
-            .size(90.dp)
-            .drawBehind {
-                if (glowAlpha > 0f) {
-                    drawCircle(
-                        brush = Brush.radialGradient(
-                            colors = listOf(Color.Red.copy(alpha = glowAlpha), Color.Transparent),
-                            center = center,
-                            radius = glowRadiusPx
-                        ),
-                        radius = glowRadiusPx,
-                        center = center
-                    )
-                }
-            }
-    ) {
-        Box(
-            contentAlignment = Alignment.Center,
-            modifier = Modifier
-                .graphicsLayer {
-                    scaleX = scale
-                    scaleY = scale
-                }
-                .size(60.dp)
-                .background(MaterialTheme.colorScheme.surface, shape = CircleShape)
-                .border(2.dp, borderColor, CircleShape)
-        ) {
-            Text(
-                text = "${velocity.toInt()}",
-                style = MaterialTheme.typography.bodyMedium,
-                fontSize = 22.sp,
-                color = borderColor
-            )
-        }
-    }
-}
-

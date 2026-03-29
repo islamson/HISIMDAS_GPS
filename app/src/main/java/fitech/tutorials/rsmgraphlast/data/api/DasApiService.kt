@@ -1,13 +1,13 @@
 package fitech.tutorials.rsmgraphlast.data.api
 
-import DASDriverStatistics
-import fitech.tutorials.rsmgraphlast.data.models.AdminConfigParams
-import fitech.tutorials.rsmgraphlast.data.models.DASInput
-import fitech.tutorials.rsmgraphlast.data.models.DASOutput
-import fitech.tutorials.rsmgraphlast.data.models.DasLogsAcc
-import fitech.tutorials.rsmgraphlast.data.models.DasLogsGps
-import fitech.tutorials.rsmgraphlast.data.models.Track
-import fitech.tutorials.rsmgraphlast.data.models.Train
+import fitech.tutorials.rsmgraphlast.data.models.dataClasses.DASDriverStatistics
+import fitech.tutorials.rsmgraphlast.data.models.dataClasses.AdminConfigParams
+import fitech.tutorials.rsmgraphlast.data.models.dataClasses.DASInput
+import fitech.tutorials.rsmgraphlast.data.models.dataClasses.DASOutput
+import fitech.tutorials.rsmgraphlast.data.models.dataClasses.DasLogsAcc
+import fitech.tutorials.rsmgraphlast.data.models.dataClasses.DasLogsGps
+import fitech.tutorials.rsmgraphlast.data.models.dataClasses.Track
+import fitech.tutorials.rsmgraphlast.data.models.dataClasses.Train
 import retrofit2.Response
 import retrofit2.http.Body
 import retrofit2.http.POST

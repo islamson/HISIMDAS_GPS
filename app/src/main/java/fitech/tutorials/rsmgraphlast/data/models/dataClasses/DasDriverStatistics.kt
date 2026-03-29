@@ -1,3 +1,6 @@
+package fitech.tutorials.rsmgraphlast.data.models.dataClasses
+
+import androidx.compose.material3.FabPosition
 import com.google.gson.annotations.SerializedName
 
 data class DASDriverStatistics(
@@ -8,7 +11,7 @@ data class DASDriverStatistics(
     @SerializedName("trainId") val trainId: Int,
     @SerializedName("trackId") val trackId: Int,
     @SerializedName("tracklineDirection") val tracklineDirection: Int,
-    @SerializedName("maxSpeed") val maxSpeed: Double = 0.0,
-    @SerializedName("averageSpeed") val averageSpeed: Double = 0.0,
-    @SerializedName("journeyTime") val journeyTime: Double = 0.0,
+    @SerializedName("referenceSpeed") val referenceSpeed: List<Double>,
+    @SerializedName("referencePosition") val referencePosition: List<Double>,
+    @SerializedName("referenceTime") val referenceTime: List<Double>,
 )

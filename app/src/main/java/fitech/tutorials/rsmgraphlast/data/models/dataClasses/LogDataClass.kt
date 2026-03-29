@@ -1,4 +1,4 @@
-package fitech.tutorials.rsmgraphlast.data.models
+package fitech.tutorials.rsmgraphlast.data.models.dataClasses
 
 data class DasLogsGps(
     val createdAt: String,   // ISO-8601, örn: Instant.now().toString()

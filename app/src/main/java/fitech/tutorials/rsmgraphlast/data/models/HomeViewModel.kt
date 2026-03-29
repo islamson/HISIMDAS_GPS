@@ -1,10 +1,13 @@
 package fitech.tutorials.rsmgraphlast.data.models
 
+import DasReferencePointsBundle
 import android.app.Application
+import android.content.Context
 import android.util.Base64
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.github.mikephil.charting.data.Entry
+import com.google.gson.Gson
 import fitech.tutorials.rsmgraphlast.data.api.ApiFactory
 import fitech.tutorials.rsmgraphlast.data.api.LoginApiService
 import fitech.tutorials.rsmgraphlast.data.api.DasApiService
@@ -12,13 +15,21 @@ import fitech.tutorials.rsmgraphlast.data.coasting.CoastingEngine
 import fitech.tutorials.rsmgraphlast.data.local.readAllConfigParams
 import fitech.tutorials.rsmgraphlast.data.local.saveAdminConfig
 import fitech.tutorials.rsmgraphlast.data.local.saveAutoStationTransition
+import fitech.tutorials.rsmgraphlast.data.models.dataClasses.AdminConfigParams
+import fitech.tutorials.rsmgraphlast.data.models.dataClasses.AllConfigParams
+import fitech.tutorials.rsmgraphlast.data.models.dataClasses.DASOutput
+import fitech.tutorials.rsmgraphlast.data.models.dataClasses.Station
+import fitech.tutorials.rsmgraphlast.data.models.dataClasses.Track
+import fitech.tutorials.rsmgraphlast.data.models.dataClasses.Train
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import org.json.JSONObject
+import java.io.File
 import java.io.IOException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
+import java.util.UUID
 
 
 class HomeViewModel(application: Application) : AndroidViewModel(application) {
@@ -86,15 +97,15 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     private val _firstAllOutProfile = MutableStateFlow<DASOutput?>(null)
     val firstAllOutProfile: StateFlow<DASOutput?> = _firstAllOutProfile
 
-    // Coasting çıktıları UI’a yine HomeVM üzerinden verelim:
     val dasProfilePoints: StateFlow<List<Entry>>
         get() = coastingEngine?.dasProfilePoints ?: MutableStateFlow(emptyList())
 
     val coastingBand: StateFlow<Pair<Float, Float>?>
         get() = coastingEngine?.coastingBand ?: MutableStateFlow(null)
 
-    val lastDasOutput: StateFlow<DASOutput?>
-        get() = coastingEngine?.lastDasOutput ?: MutableStateFlow(null)
+    val movementHint: StateFlow<String?>
+        get() = coastingEngine?.movementHint ?: MutableStateFlow(null)
+
 
     private val _segmentInitialStation = MutableStateFlow<Station?>(null)
     val segmentInitialStation: StateFlow<Station?> = _segmentInitialStation
@@ -105,9 +116,62 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     private val _driverId = MutableStateFlow<Int?>(null)
     val driverId: StateFlow<Int?> = _driverId
 
+    private val refSpeed = mutableListOf<Double>()
+    private val refPos   = mutableListOf<Double>()
+    private val refTime  = mutableListOf<Double>()
+    private var refTimeOffset = 0.0
+
 
     fun markJourneyStarted() {
         coastingEngine?.markJourneyStarted()
+    }
+
+    fun resetTripReferences() {
+        refSpeed.clear()
+        refPos.clear()
+        refTime.clear()
+        refTimeOffset = 0.0
+    }
+
+    fun appendReferenceFromDasOutput(out: DASOutput) {
+        val speeds = out.trainSpeedTime.y
+        val times  = out.trainSpeedTime.x
+        val pos    = out.trainPositionTime.y
+
+        val n = minOf(speeds.size, times.size, pos.size)
+        if (n == 0) return
+
+        // segment time'larını global timeline'a oturt
+        // ilk segment: offset 0
+        // sonraki segment: offset = refTime.lastOrNull() ?: 0
+        val base = refTime.lastOrNull() ?: 0.0
+
+        // 0. elemanı tekrar ekleyip kırılma yaratmasın diye:
+        // eğer daha önce veri varsa ilk sample'ı skip ediyoruz
+        val startIdx = if (refTime.isEmpty()) 0 else 1
+
+        for (i in startIdx until n) {
+            refSpeed.add(speeds[i].toDouble())
+            refPos.add(pos[i].toDouble())
+            refTime.add(base + times[i])
+        }
+    }
+
+    fun writeTripReferenceToFile(context: Context): File {
+        val logsDir = File(context.filesDir, "logs")
+        if (!logsDir.exists()) logsDir.mkdirs()
+
+        val gson = Gson()
+        val file = File(logsDir, "ref_${UUID.randomUUID()}.json")
+
+        val body = DasReferencePointsBundle(
+            referenceSpeed = refSpeed.toList(),
+            referencePosition = refPos.toList(),
+            referenceTime = refTime.toList()
+        )
+
+        file.writeText(gson.toJson(body))
+        return file
     }
 
     init {
@@ -165,7 +229,11 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             // DAS servisleri
             dasApiService = ApiFactory.createDasServiceShort(DAS_BASE, t)
             val das = dasApiService!!
-            coastingEngine = CoastingEngine(das, viewModelScope)
+            coastingEngine = CoastingEngine(das, viewModelScope).apply{
+                onFirstCoastingProfileOfSegment = { out ->
+                    appendReferenceFromDasOutput(out)
+                }
+            }
 
             // İlk yüklemeler
             _trains.value = das.getTrainList()
@@ -407,14 +475,6 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         _speedLimitPoints.value = result
-
-        println("Initial Berthing Position:${initial.berthingPosition} Final Berth Pos:${final.berthingPosition}")
-        result.forEach{point->
-            println("SpeedPoint:${point.x}")
-        }
-        result.forEach{point->
-            println("Speed Limit:${point.y}")
-        }
     }
 
     fun speedLimitAt(position: Float): Float {

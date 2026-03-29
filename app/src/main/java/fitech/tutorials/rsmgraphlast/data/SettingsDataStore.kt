@@ -3,8 +3,8 @@ package fitech.tutorials.rsmgraphlast.data.local
 import android.content.Context
 import androidx.datastore.preferences.core.*
 import androidx.datastore.preferences.preferencesDataStore
-import fitech.tutorials.rsmgraphlast.data.models.AllConfigParams
-import fitech.tutorials.rsmgraphlast.data.models.AdminConfigParams
+import fitech.tutorials.rsmgraphlast.data.models.dataClasses.AllConfigParams
+import fitech.tutorials.rsmgraphlast.data.models.dataClasses.AdminConfigParams
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 

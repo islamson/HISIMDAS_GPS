@@ -1,4 +1,4 @@
-package fitech.tutorials.rsmgraphlast.data.models
+package fitech.tutorials.rsmgraphlast.data.models.dataClasses
 
 data class AllConfigParams(
     val minSpeedDiff: Float = 3f,

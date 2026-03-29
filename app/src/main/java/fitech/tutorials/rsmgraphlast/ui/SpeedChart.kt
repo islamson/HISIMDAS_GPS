@@ -42,6 +42,7 @@ fun SpeedChart(
 {
     var autoCenter by remember { mutableStateOf(true) }
     var showRecenter by remember { mutableStateOf(false) }
+    var yMax by remember(initialBerthing, finalBerthing) { mutableStateOf<Float?>(null) }
 
     Box(modifier = modifier.fillMaxSize())
     {
@@ -185,9 +186,11 @@ fun SpeedChart(
 
                     val maxLimit = candidates.maxOrNull() ?: 150f
 
-                    var yMax = maxLimit * 1.10f
+                    if(yMax == null)
+                        yMax = (maxLimit * 1.10f)
+
                     fun ceilTo(step: Float, v: Float) = kotlin.math.ceil(v / step) * step
-                    yMax = ceilTo(10f, if(yMax > (speedPoints.lastOrNull()?.y ?: 0f)) yMax else ((speedPoints.lastOrNull()?.y ?: 0f) * 1.10f))
+                    yMax = ceilTo(10f, if(yMax!! > (speedPoints.lastOrNull()?.y ?: 0f)) yMax!! else ((speedPoints.lastOrNull()?.y ?: 0f) * 1.10f))
 
                     val isE2W = direction == "East to West"
                     val xStart = minOf(tracklineStart, tracklineEnd)
@@ -206,7 +209,7 @@ fun SpeedChart(
                     chart.xAxis.axisMinimum = segMinChart
                     chart.xAxis.axisMaximum = segMaxChart
                     chart.xAxis.setLabelCount(14, true)
-                    chart.axisLeft.axisMaximum = yMax
+                    chart.axisLeft.axisMaximum = yMax!!
                     chart.axisLeft.axisMinimum = 0f
 
 
@@ -222,7 +225,7 @@ fun SpeedChart(
                     val band = coastingBand
 
                     band?.let {
-                        lineDataSets += buildCoastingBandDataSet(it, yMax = yMax)
+                        lineDataSets += buildCoastingBandDataSet(it, yMax = yMax!!)
                     }
 
 
@@ -277,7 +280,7 @@ fun SpeedChart(
                         // 1) Tüm zoom/pan'ı sıfırla (X+Y)
                         chart.fitScreen()
                         chart.axisLeft.axisMinimum = 0f
-                        chart.axisLeft.axisMaximum = yMax
+                        chart.axisLeft.axisMaximum = yMax!!
                         // 3) X’te 800 m pencereyi yeniden kur
                         //val windowMin = lastX - 400f
                         //val windowMax = lastX + 400f

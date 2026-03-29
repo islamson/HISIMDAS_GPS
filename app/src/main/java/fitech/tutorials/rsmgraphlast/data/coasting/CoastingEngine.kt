@@ -3,7 +3,11 @@ package fitech.tutorials.rsmgraphlast.data.coasting
 import android.util.Log
 import com.github.mikephil.charting.data.Entry
 import fitech.tutorials.rsmgraphlast.data.api.DasApiService
-import fitech.tutorials.rsmgraphlast.data.models.*
+import fitech.tutorials.rsmgraphlast.data.models.dataClasses.DASInput
+import fitech.tutorials.rsmgraphlast.data.models.dataClasses.DASOutput
+import fitech.tutorials.rsmgraphlast.data.models.dataClasses.Station
+import fitech.tutorials.rsmgraphlast.data.models.dataClasses.Track
+import fitech.tutorials.rsmgraphlast.data.models.dataClasses.Train
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -44,6 +48,17 @@ class CoastingEngine(
 
     private val _lastDasOutput = MutableStateFlow<DASOutput?>(null)
     val lastDasOutput: StateFlow<DASOutput?> = _lastDasOutput
+
+    private val _movementHint = MutableStateFlow<String?>(null)
+    val movementHint: StateFlow<String?> = _movementHint
+
+    // Segment bazlı "ilk response" kilidi
+    private var lastSegmentKey: String? = null
+    private var appendedForThisSegment: Boolean = false
+
+    // HomeVM'den callback alacağız
+    var onFirstCoastingProfileOfSegment: ((DASOutput) -> Unit)? = null
+
 
     // Bağlayıcılar
     fun bindPosition(provider: () -> Float) { positionProvider = provider }
@@ -104,8 +119,6 @@ class CoastingEngine(
         val spd = out.trainSpeedTime.y
         val n = min(pos.size, spd.size)
         _dasProfilePoints.value = List(n) { i -> Entry(pos[i], spd[i]) }
-        for(i in 0..< pos.size)
-            println("Allout points x:${pos[i]} y:${spd[i]}")
 
         _coastingBand.value = if (out.coastingRegion.isActive) {
             out.coastingRegion.startPosition.toFloat() to out.coastingRegion.endPosition.toFloat()
@@ -125,6 +138,19 @@ class CoastingEngine(
                         delay(5_000); continue
                     }
 
+                    val segKey = buildString {
+                        append(selectedTrain!!.id); append("|")
+                        append(selectedTrack!!.id); append("|")
+                        append(selectedInitial!!.id); append("|")
+                        append(selectedFinal!!.id); append("|")
+                        append(direction!!)
+                    }
+
+                    if (segKey != lastSegmentKey) {
+                        lastSegmentKey = segKey
+                        appendedForThisSegment = false
+                    }
+
                     val start = journeyStartMs ?: System.currentTimeMillis()
                     val movementDuration = (System.currentTimeMillis() - start) / 1000.0
 
@@ -141,7 +167,6 @@ class CoastingEngine(
                     val limitAtPos = speedLimitProvider!!.invoke(currentPos)
                     val initialSpeedInput = min(speedProvider!!.invoke().toDouble(), limitAtPos.toDouble())
 
-                    Log.d("Coasting Movement Duration", "Movement Duration: $movementDuration")
 
                     val body = DASInput(
                         generalId = 1,
@@ -158,6 +183,12 @@ class CoastingEngine(
                     if (resp.isSuccessful) {
                         resp.body()?.let { out ->
                             _lastDasOutput.value = out
+
+                            if (!appendedForThisSegment) {      // Her segmentteki (iki istasyon aralığı) ilk başarılı coasting profile'ını kaydet
+                                appendedForThisSegment = true
+                                onFirstCoastingProfileOfSegment?.invoke(out)
+                            }
+
                             val positions = out.trainPositionTime.y
                             val speeds = out.trainSpeedTime.y
                             val n = min(positions.size, speeds.size)
@@ -167,10 +198,8 @@ class CoastingEngine(
                                 out.coastingRegion.startPosition.toFloat() to out.coastingRegion.endPosition.toFloat()
                             else null
 
-                            _dasProfilePoints.value.forEach {
-                                val x = if(direction == "West to East") it.x else (selectedTrack!!.tracklineEnd - (it.x - selectedTrack!!.tracklineStart))
-                                println("Das points x:${x} speed:${it.y}")
-                            }
+                            val hint = computeMovementHint(out, currentPos)
+                            _movementHint.value = hint
 
                             expectedTimeAtPosition(out, currentPos)
                             Log.d("Coasting", "original coasting start:${out.coastingRegion.startPosition}, end:${out.coastingRegion.endPosition}")
@@ -188,7 +217,7 @@ class CoastingEngine(
                 } catch (t: Throwable) {
                     t.printStackTrace()
                 }
-                delay(5_000)
+                delay(2_000)
             }
         }
     }
@@ -215,17 +244,44 @@ class CoastingEngine(
         val times = out.trainPositionTime.x
         if (positions.isEmpty() || times.isEmpty()) return null
 
-        var bestIdx = 0
-        var bestDiff = abs(positions[0] - currentPosition.toDouble())
-        for (i in 1 until min(positions.size, times.size)) {
-            val position = if(direction == "East to West") (selectedTrack!!.tracklineEnd - (positions[i] - selectedTrack!!.tracklineStart)) else positions[i]
-            val d = abs(position - currentPosition.toDouble())
-            if (d < bestDiff) { bestDiff = d; bestIdx = i }
-        }
+        val bestIdx = findNearestIndex(positions, currentPosition)
         expectedTime = times[bestIdx]
         bestPosition = if(direction == "East to West") (selectedTrack!!.tracklineEnd - (positions[bestIdx] - selectedTrack!!.tracklineStart)) else positions[bestIdx]
 
         return expectedTime  //
+    }
+
+    private fun findNearestIndex(values: List<Float>, target: Float): Int {
+        if (values.isEmpty()) return 0
+        var bestIdx = 0
+        var bestDiff = kotlin.math.abs(values[0] - target)
+        for (i in 1 until values.size) {
+            val position = if(direction == "East to West") (selectedTrack!!.tracklineEnd - (values[i] - selectedTrack!!.tracklineStart)) else values[i]
+            val d = abs(position - target)
+            if (d < bestDiff) { bestDiff = d; bestIdx = i }
+        }
+        return bestIdx
+    }
+
+    private fun computeMovementHint(out: DASOutput, currentPos: Float): String? {
+        val posList = out.trainPositionTime.y
+        if (posList.isEmpty()) return null
+        val posIdx = findNearestIndex(posList, currentPos)
+
+        val msStates = out.trainMovementStateTime.y
+        val raw = msStates.getOrNull(posIdx + 1) ?: return null
+        val mode = raw.toInt()
+        println("Mode:${mode}")
+
+        return when {
+            mode in 1..4 -> "Hızlan"
+            mode == 5 || mode == 6 -> "Sabit Git"
+            mode in 7..10 -> "Yavaşla"
+            mode == 11 -> "Dur"
+            mode == 12 -> "Boşa Al"
+            mode == 13 -> "Boşa Al (Sabit)"
+            else -> null
+        }
     }
 
 }

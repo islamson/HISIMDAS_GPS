@@ -31,7 +31,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import fitech.tutorials.rsmgraphlast.data.models.AllConfigParams
+import fitech.tutorials.rsmgraphlast.data.models.dataClasses.AllConfigParams
 
 @Composable
 fun SettingsDialog(

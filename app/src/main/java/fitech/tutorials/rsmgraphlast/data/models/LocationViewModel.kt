@@ -14,7 +14,6 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
-import androidx.work.Data
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
@@ -22,6 +21,8 @@ import androidx.work.workDataOf
 import com.google.android.gms.location.*
 import com.google.gson.Gson
 import fitech.tutorials.rsmgraphlast.data.LocationProcessor
+import fitech.tutorials.rsmgraphlast.data.models.dataClasses.DasLogsAcc
+import fitech.tutorials.rsmgraphlast.data.models.dataClasses.DasLogsGps
 import fitech.tutorials.rsmgraphlast.work.UploadTripWorker
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -72,10 +73,15 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
     private var currentLinearAcc = FloatArray(3)
     private var lastLinearAcc = FloatArray(3)
     private var isFirstAccData : Boolean = true
-    private var rotationMatrix = FloatArray(9)
-    private var a_world = FloatArray(3)
     private var currentAccTime : Long = 0L
     private var lastAccTime : Long = 0L
+
+    // 1 kerelik ivme yön kalibrasyonu ===
+    private var accSign: Float = 1f                 // +1 veya -1
+    private var accSignCalibrated: Boolean = false  // 1 kere set olunca true
+    private var lastAccX: Float = 0f                // sensörden gelen son X ivme (m/s^2)
+    private var lastAccY: Float = 0f                // sensörden gelen son Y ivme (m/s^2)
+
 
     private var lastVelocity: Float? = null
     private var currentVelocity : Float? = null
@@ -148,7 +154,6 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
                     lastProjectedLocation = currentLocation
                     lastVelocity = null
                 }
-                Log.d("Config params:", "minSpeedDiff:${minSpeedDifference} maksSpeedDiff:${maxSpeedDifference} minPositionDiff:${minPositionDifference} accDt:${accSamplingTime} gpsNoDt:${gpsNoDataTime} calibrationCount:${calibrationDataCount} isAutoEnabled:${homeViewModel.autoStateTransition.value}")
                 if (lastLocation == null) {
                     println("Bu ilk deneme. lastLocation = null burada.")
                     lastLocation = currentLocation
@@ -188,8 +193,6 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
                     }
                 }
 
-                Log.d("GPS Measurement", "Last Velocity:${lastVelocity}, Curr Velocity:${currentVelocity}, Pos Diff:${positionDifference}")
-
 
                 val xyPositions = locationProcessor.latLongToXY(currentConvertedLocation.latitude, currentConvertedLocation.longitude, lastLocation!!.latitude, lastLocation!!.longitude)
                 xPositionTotal += xyPositions.first.absoluteValue
@@ -213,7 +216,6 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
                         yPositionTotal = 0.0
                         kalmanFilter = KalmanFilter(1.0, 10.0)
                         kalmanFilter!!.init(0.0, 0.0, initialXVelocity, initialYVelocity)
-                        println("GPS is ready now. initialXVelocity:${initialXVelocity}, initialYVelocity:${initialYVelocity}")
                         isSystemReady = true
                         val dir = homeViewModel.selectedDirection.value ?: "West to East"
                         val sign = if (dir == "West to East") 1 else -1
@@ -235,6 +237,27 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
                     }
                     else{
                         if(isGPSReady){
+                            val gpsSpeedMps = (currentVelocity!! / 3.6)
+                            val nowMs = currentConvertedLocation.time
+
+                            // 1 kerelik ivme yön kalibrasyonu (GPS varken)
+                            if (!accSignCalibrated) {
+                                val prevV = (lastVelocity!! / 3.6).toDouble()
+                                val prevT = lastLocation!!.time
+
+                                val dtS = (nowMs - prevT) / 1000.0
+                                if (dtS > 0.15 && dtS < 2.0) {
+                                    val gpsAccMps2 = (gpsSpeedMps - prevV) / dtS   // m/s^2
+                                    val ax = lastAccX.toDouble()                   // m/s^2 (cihaz X)
+                                    // sadece anlamlı hızlanma anında kalibre et
+                                    if (kotlin.math.abs(gpsAccMps2) > 0.01 && kotlin.math.abs(ax) > 0.01) {
+                                        accSign = if (gpsAccMps2 * ax >= 0) 1f else -1f
+                                        accSignCalibrated = true
+                                        Log.d("ACC_SIGN", "Calibrated accSign=$accSign (gpsAcc=$gpsAccMps2, ax=$ax)")
+                                    }
+                                }
+
+                            }
                             kalmanFilter!!.predict(0.0,0.0, dt)
                             kalmanFilter!!.update(xPositionTotal, yPositionTotal)
                             val kalmanUpdatedSpeed = kalmanFilter!!.getSpeed().toInt()
@@ -315,6 +338,12 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
         location_third = null
         totalData = 0
         _dataNumber.value = 0
+
+        accSign = 1f
+        accSignCalibrated = false
+        lastAccX = 0f
+        lastAccY = 0f
+
         this.sensorManager = sensorManager
         appContext = context.applicationContext
         trackStartMs = System.currentTimeMillis()
@@ -322,11 +351,9 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
 
 
         val linearAccSensor = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)
-        val rotationVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
 
         if(linearAccSensor != null){
             sensorManager.registerListener(this, linearAccSensor, SensorManager.SENSOR_DELAY_UI)
-            sensorManager.registerListener(this, rotationVectorSensor, SensorManager.SENSOR_DELAY_UI)
         }
 
         val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
@@ -394,6 +421,7 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
         val gson = Gson()
         val gpsFile = File(logsDir, "gps_${UUID.randomUUID()}.json")
         val accFile = File(logsDir, "acc_${UUID.randomUUID()}.json")
+        val refFile = homeViewModel.writeTripReferenceToFile(appContext)
 
         gpsFile.writeText(gson.toJson(gpsBody))
         accFile.writeText(gson.toJson(accBody))
@@ -417,6 +445,7 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
             UploadTripWorker.KEY_TOKEN to token,
             UploadTripWorker.KEY_GPS_PATH to gpsFile.absolutePath,
             UploadTripWorker.KEY_ACC_PATH to accFile.absolutePath,
+            UploadTripWorker.KEY_REF_PATH to refFile.absolutePath,
             UploadTripWorker.KEY_DRIVER_ID to driverId,
             UploadTripWorker.KEY_TRAIN_ID to trainId,
             UploadTripWorker.KEY_TRACK_ID to trackId,
@@ -449,10 +478,6 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
     }
 
     override fun onSensorChanged(event: SensorEvent?) {
-        if(event?.sensor?.type == Sensor.TYPE_ROTATION_VECTOR){
-            SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values)
-            a_world = getWorldAcceleration(rotationMatrix, currentLinearAcc)
-        }
         if(event?.sensor?.type == Sensor.TYPE_LINEAR_ACCELERATION){
             currentAccTime = event.timestamp
             val threshold = 0.02f
@@ -465,20 +490,24 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
                     currentLinearAcc[i] = event.values[i]
                 }
             }
-            a_world = getWorldAcceleration(rotationMatrix, currentLinearAcc)
-            //lastLinearAcceleration ile kontrole devam et unutmaAaAaAA!!!
+            lastAccX = currentLinearAcc[0]
+            lastAccY = currentLinearAcc[1]
+
             if(isFirstAccData){
                 lastAccTime = currentAccTime
                 isFirstAccData = false
                 return
             }
+
             if(isSystemReady){
                 val currentTime = System.currentTimeMillis()
                 val timeDiffLastLocat = (currentTime - lastLocation!!.time) / 1000.0    // Time difference in seconds between last location and current time
                 dt = (currentAccTime - lastAccTime) / 1_000_000_000.0 // time difference in seconds
                 if(dt > accSamplingTime){
                     // Calculate speed and position via KalmanFilter
-                    kalmanFilter!!.predict(a_world[0].toDouble(), a_world[1].toDouble(), dt)
+                    val axSigned = (accSign * lastAccX).toDouble()
+                    val aySigned = (accSign * lastAccY).toDouble()
+                    kalmanFilter!!.predict(axSigned, aySigned, dt)
                     val kalmanPredictedSpeed = kalmanFilter!!.getSpeed().toInt()
                     val kalmanPredictedPosition = kalmanFilter!!.getPosition()
                     if(abs(kalmanPredictedSpeed - _speed.value) > maxSpeedDifference)
@@ -519,7 +548,7 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
                         val timeStamp = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.getDefault()).format(Date())
 
                         csvWriter?.apply {
-                            write("$timeStamp,${"-"},${"-"},${"-"},${a_world[0]},${a_world[1]},${a_world[2]},${_position.value.roundToInt()},${_speed.value.roundToInt()}")
+                            write("$timeStamp,${"-"},${"-"},${"-"},${axSigned},${aySigned},${currentLinearAcc[2] * accSign},${_position.value.roundToInt()},${_speed.value.roundToInt()}")
                             newLine()
                             flush()
                         }
@@ -536,9 +565,9 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
                     lastAccTime = currentAccTime
 
                     //Acc Logları için
-                    logAccX.add(a_world[0].toDouble())
-                    logAccY.add(a_world[1].toDouble())
-                    logAccZ.add(a_world[2].toDouble())
+                    logAccX.add(axSigned)
+                    logAccY.add(aySigned)
+                    logAccZ.add((currentLinearAcc[2] * accSign).toDouble())
                     logAccTime.add(_trackMovementTime.value)
                     logAccDataNumber++
                 }
@@ -551,14 +580,6 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
     }
 
     override fun onAccuracyChanged(p0: Sensor?, p1: Int) {
-    }
-
-    fun getWorldAcceleration(RotationMatrix: FloatArray, acceleration : FloatArray) : FloatArray{
-        a_world[0] = RotationMatrix[0] * acceleration[0] + RotationMatrix[1] * acceleration[1] + RotationMatrix[2] * acceleration[2]
-        a_world[1] = RotationMatrix[3] * acceleration[0] + RotationMatrix[4] * acceleration[1] + RotationMatrix[5] * acceleration[2]
-        a_world[2] = RotationMatrix[6] * acceleration[0] + RotationMatrix[7] * acceleration[1] + RotationMatrix[8] * acceleration[2]
-
-        return a_world
     }
 
     fun calculateNorm(acceleration: FloatArray): Float {

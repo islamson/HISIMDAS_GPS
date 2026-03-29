@@ -11,7 +11,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
-import fitech.tutorials.rsmgraphlast.data.models.Station
+import fitech.tutorials.rsmgraphlast.data.models.dataClasses.Station
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
