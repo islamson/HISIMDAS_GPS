@@ -18,6 +18,8 @@ import fitech.tutorials.rsmgraphlast.data.local.saveAutoStationTransition
 import fitech.tutorials.rsmgraphlast.data.models.dataClasses.AdminConfigParams
 import fitech.tutorials.rsmgraphlast.data.models.dataClasses.AllConfigParams
 import fitech.tutorials.rsmgraphlast.data.models.dataClasses.DASOutput
+import fitech.tutorials.rsmgraphlast.data.models.dataClasses.CoastingMode
+import fitech.tutorials.rsmgraphlast.data.models.dataClasses.CoastingData
 import fitech.tutorials.rsmgraphlast.data.models.dataClasses.Station
 import fitech.tutorials.rsmgraphlast.data.models.dataClasses.Track
 import fitech.tutorials.rsmgraphlast.data.models.dataClasses.Train
@@ -97,14 +99,47 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     private val _firstAllOutProfile = MutableStateFlow<DASOutput?>(null)
     val firstAllOutProfile: StateFlow<DASOutput?> = _firstAllOutProfile
 
-    val dasProfilePoints: StateFlow<List<Entry>>
+    private val _selectedCoastingMode = MutableStateFlow(CoastingMode.DYNAMIC)
+    val selectedCoastingMode: StateFlow<CoastingMode> = _selectedCoastingMode
+
+    private val _staticProfilePoints = MutableStateFlow<List<Entry>>(emptyList())
+    val staticProfilePoints: StateFlow<List<Entry>> = _staticProfilePoints
+
+    private val _fixedProfilePoints = MutableStateFlow<List<Entry>>(emptyList())
+    val fixedProfilePoints: StateFlow<List<Entry>> = _fixedProfilePoints
+
+    private val _staticCoastingBands = MutableStateFlow<List<Pair<Float, Float>>>(emptyList())
+    val staticCoastingBands: StateFlow<List<Pair<Float, Float>>> = _staticCoastingBands
+
+    private val _fixedCoastingBands = MutableStateFlow<List<Pair<Float, Float>>>(emptyList())
+    val fixedCoastingBands: StateFlow<List<Pair<Float, Float>>> = _fixedCoastingBands
+
+    val dynamicProfilePoints: StateFlow<List<Entry>>
         get() = coastingEngine?.dasProfilePoints ?: MutableStateFlow(emptyList())
 
-    val coastingBand: StateFlow<Pair<Float, Float>?>
-        get() = coastingEngine?.coastingBand ?: MutableStateFlow(null)
+    val dynamicCoastingBands: StateFlow<List<Pair<Float, Float>>>
+        get() = coastingEngine?.coastingBands ?: MutableStateFlow(emptyList())
+
+    val dasProfilePoints: StateFlow<List<Entry>>
+        get() = when (_selectedCoastingMode.value) {
+            CoastingMode.DYNAMIC -> dynamicProfilePoints
+            CoastingMode.FIXED -> _fixedProfilePoints
+            CoastingMode.STATIC -> _staticProfilePoints
+        }
+
+    val coastingBands: StateFlow<List<Pair<Float, Float>>>
+        get() = when (_selectedCoastingMode.value) {
+            CoastingMode.DYNAMIC -> dynamicCoastingBands
+            CoastingMode.FIXED -> _fixedCoastingBands
+            CoastingMode.STATIC -> _staticCoastingBands
+        }
 
     val movementHint: StateFlow<String?>
-        get() = coastingEngine?.movementHint ?: MutableStateFlow(null)
+        get() = if (_selectedCoastingMode.value == CoastingMode.DYNAMIC) {
+            coastingEngine?.movementHint ?: MutableStateFlow(null)
+        } else {
+            MutableStateFlow(null)
+        }
 
 
     private val _segmentInitialStation = MutableStateFlow<Station?>(null)
@@ -121,6 +156,11 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     private val refTime  = mutableListOf<Double>()
     private var refTimeOffset = 0.0
 
+    private fun mapCoastingRegionsToBands(regions: List<CoastingData>): List<Pair<Float, Float>> {
+        return regions
+            .filter { it.isActive }
+            .map { it.startPosition.toFloat() to it.endPosition.toFloat() }
+    }
 
     fun markJourneyStarted() {
         coastingEngine?.markJourneyStarted()
@@ -131,23 +171,20 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         refPos.clear()
         refTime.clear()
         refTimeOffset = 0.0
+
+        _staticProfilePoints.value = emptyList()
+        _staticCoastingBands.value = emptyList()
     }
 
     fun appendReferenceFromDasOutput(out: DASOutput) {
         val speeds = out.trainSpeedTime.y
-        val times  = out.trainSpeedTime.x
-        val pos    = out.trainPositionTime.y
+        val times = out.trainSpeedTime.x
+        val pos = out.trainPositionTime.y
 
         val n = minOf(speeds.size, times.size, pos.size)
         if (n == 0) return
 
-        // segment time'larını global timeline'a oturt
-        // ilk segment: offset 0
-        // sonraki segment: offset = refTime.lastOrNull() ?: 0
         val base = refTime.lastOrNull() ?: 0.0
-
-        // 0. elemanı tekrar ekleyip kırılma yaratmasın diye:
-        // eğer daha önce veri varsa ilk sample'ı skip ediyoruz
         val startIdx = if (refTime.isEmpty()) 0 else 1
 
         for (i in startIdx until n) {
@@ -155,6 +192,14 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             refPos.add(pos[i].toDouble())
             refTime.add(base + times[i])
         }
+
+        _staticProfilePoints.value = refPos.indices.map { i ->
+            Entry(refPos[i].toFloat(), refSpeed[i].toFloat())
+        }
+
+        val mergedBands = _staticCoastingBands.value.toMutableList()
+        mergedBands.addAll(mapCoastingRegionsToBands(out.coastingRegion))
+        _staticCoastingBands.value = mergedBands
     }
 
     fun writeTripReferenceToFile(context: Context): File {
@@ -172,6 +217,23 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
         file.writeText(gson.toJson(body))
         return file
+    }
+
+    private fun clearFixedProfileCache() {
+        _fixedProfilePoints.value = emptyList()
+        _fixedCoastingBands.value = emptyList()
+    }
+
+    private fun setFixedProfileFromOutput(out: DASOutput) {
+        val positions = out.trainPositionTime.y
+        val speeds = out.trainSpeedTime.y
+        val n = minOf(positions.size, speeds.size)
+
+        _fixedProfilePoints.value = List(n) { i ->
+            Entry(positions[i], speeds[i])
+        }
+
+        _fixedCoastingBands.value = mapCoastingRegionsToBands(out.coastingRegion)
     }
 
     init {
@@ -297,6 +359,14 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         _trains.value = emptyList()
         _tracks.value = emptyList()
         _speedLimitPoints.value = emptyList()
+
+        _selectedCoastingMode.value = CoastingMode.DYNAMIC
+        _fixedProfilePoints.value = emptyList()
+        _fixedCoastingBands.value = emptyList()
+        _staticProfilePoints.value = emptyList()
+        _staticCoastingBands.value = emptyList()
+
+        resetTripReferences()
 
         _isLoggedIn.value = false
         _loginError.value = null
@@ -478,17 +548,36 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun speedLimitAt(position: Float): Float {
-        val limits = _speedLimitPoints.value // List<Entry> (x: position, y: speed)
+        val limits = _speedLimitPoints.value
         if (limits.isEmpty()) return Float.POSITIVE_INFINITY
 
-        // X'e göre sıralı değilse önce sırala
-        val sorted = limits.sortedBy { it.x }
+        val isW2E = _selectedDirection.value == "West to East"
 
-        var last = sorted.first().y
-        for (e in sorted) {
-            if (e.x <= position) last = e.y else break
+        return if (isW2E) {
+            val sorted = limits.sortedBy { it.x }
+
+            var last = sorted.first().y
+            for (e in sorted) {
+                if (e.x <= position) {
+                    last = e.y
+                } else {
+                    break
+                }
+            }
+            last
+        } else {
+            val sorted = limits.sortedByDescending { it.x }
+
+            var last = sorted.first().y
+            for (e in sorted) {
+                if (e.x >= position) {
+                    last = e.y
+                } else {
+                    break
+                }
+            }
+            last
         }
-        return last
     }
 
 
@@ -496,6 +585,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     fun fetchAllOutProfileOnce() = viewModelScope.launch {
         val isAllOutGetted = coastingEngine?.fetchAllOutProfileOnce() ?: false
         _allOutJourneyTime.value = if (isAllOutGetted) coastingEngine?.getAllOutJourneyTime() ?: 0.0 else 0.0
+        _firstAllOutProfile.value = coastingEngine?.lastDasOutput?.value
     }
 
     // Döngüyü başlat/bitir
@@ -508,6 +598,25 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
     fun stopCoastingSimLoop(){
         coastingEngine?.stopLoop()
+    }
+
+    fun selectCoastingMode(
+        mode: CoastingMode,
+        currentPosition: Float? = null,
+        currentSpeed: Float? = null
+    ) {
+        _selectedCoastingMode.value = mode
+
+        if (mode == CoastingMode.FIXED) {
+            if (currentPosition != null && currentSpeed != null) {
+                fetchFixedProfileOnce(currentPosition, currentSpeed)
+            }
+        }
+    }
+
+    fun fetchFixedProfileOnce(currentPosition: Float, currentSpeed: Float) = viewModelScope.launch {
+        val out = coastingEngine?.fetchFixedProfileOnce(currentPosition, currentSpeed) ?: return@launch
+        setFixedProfileFromOutput(out)
     }
 
     fun selectSkippedStations(skippedStations: Set<Station>){
@@ -553,6 +662,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
         // Segment değişince coasting & speedlimit hesapları bu segmente göre olmalı:
         _selectedInitialStation.value = st
+        clearFixedProfileCache()
         coastingEngine?.updateSelections(
             _selectedTrain.value, _selectedTrack.value, st, _segmentFinalStation.value, _selectedDirection.value
         )
@@ -562,6 +672,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         _segmentFinalStation.value = st
 
         _selectedFinalStation.value = st
+        clearFixedProfileCache()
         coastingEngine?.updateSelections(
             _selectedTrain.value, _selectedTrack.value, _segmentInitialStation.value, st, _selectedDirection.value
         )

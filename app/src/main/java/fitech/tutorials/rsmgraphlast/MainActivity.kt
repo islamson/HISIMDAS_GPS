@@ -1,5 +1,6 @@
 package fitech.tutorials.rsmgraphlast
 
+import CoastingModeSelector
 import MovementAlertBanner
 import android.Manifest
 import android.hardware.SensorManager
@@ -48,6 +49,7 @@ import fitech.tutorials.rsmgraphlast.ui.HomeScreen
 import fitech.tutorials.rsmgraphlast.data.models.HomeViewModel
 import fitech.tutorials.rsmgraphlast.data.models.LocationVMFactory
 import fitech.tutorials.rsmgraphlast.data.models.LocationViewModel
+import fitech.tutorials.rsmgraphlast.data.models.dataClasses.CoastingMode
 import fitech.tutorials.rsmgraphlast.data.models.dataClasses.Station
 import fitech.tutorials.rsmgraphlast.ui.CalibrationDialog
 import fitech.tutorials.rsmgraphlast.ui.LoginScreen
@@ -277,7 +279,8 @@ fun MainScreen(locationViewModel: LocationViewModel, homeViewModel: HomeViewMode
     val speedLimitPoints by homeViewModel.speedLimitPoints.collectAsState()
     val direction by homeViewModel.selectedDirection.collectAsState()
     val dasProfile by homeViewModel.dasProfilePoints.collectAsState()
-    val coastingData by homeViewModel.coastingBand.collectAsState()
+    val coastingBands by homeViewModel.coastingBands.collectAsState()
+    val selectedCoastingMode by homeViewModel.selectedCoastingMode.collectAsState()
     val movementHint by homeViewModel.movementHint.collectAsState(initial = null)
     val velocityPoints = remember { mutableStateListOf<Entry>() }
     val speedCircleColor = remember { mutableStateOf(Color.Black) }
@@ -435,9 +438,33 @@ fun MainScreen(locationViewModel: LocationViewModel, homeViewModel: HomeViewMode
                 initialBerthing = initialStation!!.berthingPosition,
                 finalBerthing = finalStation!!.berthingPosition,
                 dasProfile = dasProfile,
-                coastingBand = coastingData,
+                coastingBands = coastingBands,
                 direction = direction!!,
                 modifier = Modifier.weight(1f)
+            )
+
+            CoastingModeSelector(
+                selectedMode = selectedCoastingMode,
+                onModeSelected = { mode ->
+                    when (mode) {
+                        CoastingMode.DYNAMIC -> {
+                            homeViewModel.selectCoastingMode(CoastingMode.DYNAMIC)
+                        }
+                        CoastingMode.STATIC -> {
+                            homeViewModel.selectCoastingMode(CoastingMode.STATIC)
+                        }
+                        CoastingMode.FIXED -> {
+                            homeViewModel.selectCoastingMode(
+                                CoastingMode.FIXED,
+                                currentPosition = absCenterPos,
+                                currentSpeed = speed
+                            )
+                        }
+                    }
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 4.dp)
             )
 
             SegmentControlBar(
@@ -451,22 +478,54 @@ fun MainScreen(locationViewModel: LocationViewModel, homeViewModel: HomeViewMode
                     homeViewModel.setSegmentInitial(st)
                     homeViewModel.calculateSpeedLimits()
                     homeViewModel.fetchAllOutProfileOnce()
+
+                    if (selectedCoastingMode == CoastingMode.FIXED) {
+                        homeViewModel.selectCoastingMode(
+                            CoastingMode.FIXED,
+                            currentPosition = absCenterPos,
+                            currentSpeed = speed
+                        )
+                    }
                 },
                 onSelectFinal = { st ->
                     homeViewModel.setSegmentFinal(st)
                     homeViewModel.calculateSpeedLimits()
                     homeViewModel.fetchAllOutProfileOnce()
+
+                    if (selectedCoastingMode == CoastingMode.FIXED) {
+                        homeViewModel.selectCoastingMode(
+                            CoastingMode.FIXED,
+                            currentPosition = absCenterPos,
+                            currentSpeed = speed
+                        )
+                    }
                 },
 
                 onPrev = {
                     homeViewModel.goPrevSegment()
                     homeViewModel.calculateSpeedLimits()
                     homeViewModel.fetchAllOutProfileOnce()
+
+                    if (selectedCoastingMode == CoastingMode.FIXED) {
+                        homeViewModel.selectCoastingMode(
+                            CoastingMode.FIXED,
+                            currentPosition = absCenterPos,
+                            currentSpeed = speed
+                        )
+                    }
                 },
                 onNext = {
                     homeViewModel.goNextSegment()
                     homeViewModel.calculateSpeedLimits()
                     homeViewModel.fetchAllOutProfileOnce()
+
+                    if (selectedCoastingMode == CoastingMode.FIXED) {
+                        homeViewModel.selectCoastingMode(
+                            CoastingMode.FIXED,
+                            currentPosition = absCenterPos,
+                            currentSpeed = speed
+                        )
+                    }
                 },
 
                 startEnabled = startEnabled,
@@ -485,10 +544,17 @@ fun MainScreen(locationViewModel: LocationViewModel, homeViewModel: HomeViewMode
                         val onFinishedSegmentScreen = (arrivedStation != null && segFinal != null && segFinal!!.id == arrivedStation!!.id)
 
                         if (onFinishedSegmentScreen) {
-                            // Kullanıcı Nexte basmamışsa, Continue basınca otomatik sonraki segmente geç
                             homeViewModel.goNextSegment()
                             homeViewModel.calculateSpeedLimits()
                             homeViewModel.fetchAllOutProfileOnce()
+
+                            if (selectedCoastingMode == CoastingMode.FIXED) {
+                                homeViewModel.selectCoastingMode(
+                                    CoastingMode.FIXED,
+                                    currentPosition = absCenterPos,
+                                    currentSpeed = speed
+                                )
+                            }
                         }
 
                         velocityPoints.clear()

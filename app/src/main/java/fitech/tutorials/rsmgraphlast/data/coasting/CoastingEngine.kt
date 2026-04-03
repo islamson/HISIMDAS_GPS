@@ -3,6 +3,7 @@ package fitech.tutorials.rsmgraphlast.data.coasting
 import android.util.Log
 import com.github.mikephil.charting.data.Entry
 import fitech.tutorials.rsmgraphlast.data.api.DasApiService
+import fitech.tutorials.rsmgraphlast.data.models.dataClasses.CoastingData
 import fitech.tutorials.rsmgraphlast.data.models.dataClasses.DASInput
 import fitech.tutorials.rsmgraphlast.data.models.dataClasses.DASOutput
 import fitech.tutorials.rsmgraphlast.data.models.dataClasses.Station
@@ -43,8 +44,8 @@ class CoastingEngine(
     private val _dasProfilePoints = MutableStateFlow<List<Entry>>(emptyList())
     val dasProfilePoints: StateFlow<List<Entry>> = _dasProfilePoints
 
-    private val _coastingBand = MutableStateFlow<Pair<Float, Float>?>(null)
-    val coastingBand: StateFlow<Pair<Float, Float>?> = _coastingBand
+    private val _coastingBands = MutableStateFlow<List<Pair<Float, Float>>>(emptyList())
+    val coastingBands: StateFlow<List<Pair<Float, Float>>> = _coastingBands
 
     private val _lastDasOutput = MutableStateFlow<DASOutput?>(null)
     val lastDasOutput: StateFlow<DASOutput?> = _lastDasOutput
@@ -94,7 +95,7 @@ class CoastingEngine(
         val offset = sign * tr.totalLength / 2.0
 
         val initialPositionInput = si.berthingPosition + offset
-        val finalPositionInput   = sf.berthingPosition + offset
+        val finalPositionInput = sf.berthingPosition + offset
 
         val body = DASInput(
             generalId = 1,
@@ -103,7 +104,8 @@ class CoastingEngine(
             initialPosition = initialPositionInput,
             finalPosition = finalPositionInput,
             tracklineDirection = if (dir == "West to East") 0 else 1,
-            coastingAllowedTime = 0.0
+            coastingAllowedTime = 0.0,
+            useStaticCoastingProfile = false
         )
 
         val resp = dasApi.simulate(body)
@@ -114,17 +116,40 @@ class CoastingEngine(
         firstAllOutProfile = out
         allOutJourneyTime = out.journeyTime
         _lastDasOutput.value = out
-
-        val pos = out.trainPositionTime.y
-        val spd = out.trainSpeedTime.y
-        val n = min(pos.size, spd.size)
-        _dasProfilePoints.value = List(n) { i -> Entry(pos[i], spd[i]) }
-
-        _coastingBand.value = if (out.coastingRegion.isActive) {
-            out.coastingRegion.startPosition.toFloat() to out.coastingRegion.endPosition.toFloat()
-        } else null
+        _dasProfilePoints.value = mapOutputToEntries(out)
+        _coastingBands.value = mapCoastingRegionsToBands(out.coastingRegion)
 
         true
+    }
+
+    suspend fun fetchFixedProfileOnce(
+        currentPos: Float,
+        currentSpeed: Float
+    ): DASOutput? = withContext(Dispatchers.IO) {
+        val tr = selectedTrain ?: return@withContext null
+        val tk = selectedTrack ?: return@withContext null
+        val sf = selectedFinal ?: return@withContext null
+        val dir = direction ?: return@withContext null
+
+        val sign = if (dir == "West to East") 1 else -1
+        val finalPositionInput = sf.berthingPosition + (sign * tr.totalLength / 2.0)
+
+        val body = DASInput(
+            generalId = 1,
+            trainId = tr.id,
+            trackId = tk.id,
+            initialPosition = currentPos.toDouble(),
+            finalPosition = finalPositionInput,
+            initialSpeed = currentSpeed.toDouble(),
+            tracklineDirection = if (dir == "West to East") 0 else 1,
+            coastingAllowedTime = 0.0,
+            useStaticCoastingProfile = true
+        )
+
+        val resp = dasApi.simulate(body)
+        if (!resp.isSuccessful) return@withContext null
+
+        resp.body()
     }
 
     // Döngü
@@ -176,7 +201,8 @@ class CoastingEngine(
                         finalPosition = finalPositionInput,
                         initialSpeed = initialSpeedInput,
                         tracklineDirection = if (direction == "West to East") 0 else 1,
-                        coastingAllowedTime = coastingTimeInput
+                        coastingAllowedTime = coastingTimeInput,
+                        useStaticCoastingProfile = false
                     )
 
                     val resp = withContext(Dispatchers.IO) { dasApi.simulate(body) }
@@ -189,29 +215,37 @@ class CoastingEngine(
                                 onFirstCoastingProfileOfSegment?.invoke(out)
                             }
 
-                            val positions = out.trainPositionTime.y
-                            val speeds = out.trainSpeedTime.y
-                            val n = min(positions.size, speeds.size)
-                            _dasProfilePoints.value = List(n) { i -> Entry(positions[i], speeds[i]) }
-
-                            _coastingBand.value = if (out.coastingRegion.isActive)
-                                out.coastingRegion.startPosition.toFloat() to out.coastingRegion.endPosition.toFloat()
-                            else null
+                            _dasProfilePoints.value = mapOutputToEntries(out)
+                            _coastingBands.value = mapCoastingRegionsToBands(out.coastingRegion)
 
                             val hint = computeMovementHint(out, currentPos)
                             _movementHint.value = hint
 
                             expectedTimeAtPosition(out, currentPos)
-                            Log.d("Coasting", "original coasting start:${out.coastingRegion.startPosition}, end:${out.coastingRegion.endPosition}")
+                            Log.d("Coasting", "original coasting regions: ${out.coastingRegion.map { "${it.startPosition}-${it.endPosition}" }}")
                         }
                     } else {
                         Log.w("Coasting", "simulate failed: ${resp.code()} ${resp.message()}")
                     }
-                    val coastingBandStartPos = if(direction == "West to East") _coastingBand.value?.first else (coastingBand.value?.first?.minus(selectedTrack!!.tracklineStart)
-                        ?.let { selectedTrack!!.tracklineEnd.minus(it) })
 
-                    val coastingBandEndPos = if(direction == "West to East") _coastingBand.value?.second else (coastingBand.value?.second?.minus(selectedTrack!!.tracklineStart)
-                        ?.let { selectedTrack!!.tracklineEnd.minus(it) })
+                    """ Bu kısım sadece loglama için, yani coastingBandStartPos ve EndPos a hiç gerek yok silersin sonra bunu """
+                    val firstBand = _coastingBands.value.firstOrNull()
+
+                    val coastingBandStartPos = if (direction == "West to East") {
+                        firstBand?.first
+                    } else {
+                        firstBand?.first
+                            ?.minus(selectedTrack!!.tracklineStart)
+                            ?.let { selectedTrack!!.tracklineEnd.minus(it) }
+                    }
+
+                    val coastingBandEndPos = if (direction == "West to East") {
+                        firstBand?.second
+                    } else {
+                        firstBand?.second
+                            ?.minus(selectedTrack!!.tracklineStart)
+                            ?.let { selectedTrack!!.tracklineEnd.minus(it) }
+                    }
 
                     Log.d("Coasting", "CoastingTime:${coastingTimeInput}, bestPos:${bestPosition}, currentPos${currentPos}, expectedTime:${expectedTime}\n, timeDifference:${timeDifference}, startingPos:${coastingBandStartPos}, endPos:${coastingBandEndPos}, trainLength:${selectedTrain!!.totalLength}")
                 } catch (t: Throwable) {
@@ -225,6 +259,21 @@ class CoastingEngine(
     fun stopLoop() {
         simJob?.cancel()
         simJob = null
+        _movementHint.value = null
+        _coastingBands.value = emptyList()
+    }
+
+    private fun mapOutputToEntries(out: DASOutput): List<Entry> {
+        val positions = out.trainPositionTime.y
+        val speeds = out.trainSpeedTime.y
+        val n = min(positions.size, speeds.size)
+        return List(n) { i -> Entry(positions[i], speeds[i]) }
+    }
+
+    private fun mapCoastingRegionsToBands(regions: List<CoastingData>): List<Pair<Float, Float>> {
+        return regions
+            .filter { it.isActive }
+            .map { it.startPosition.toFloat() to it.endPosition.toFloat() }
     }
 
     // Hesap parçaları

@@ -35,7 +35,7 @@ fun SpeedChart(
     initialBerthing: Float,
     finalBerthing: Float,
     dasProfile: List<Entry>,
-    coastingBand: Pair<Float, Float>?,
+    coastingBands: List<Pair<Float, Float>>,
     direction: String,
     modifier: Modifier = Modifier
 )
@@ -221,13 +221,13 @@ fun SpeedChart(
 
                     val lineDataSets = mutableListOf<ILineDataSet>()
 
-                    // Coasting band varsa ekle
-                    val band = coastingBand
+                    // Tüm coasting band'leri ekle
+                    coastingBands.forEach { band ->
+                        val normalizedBand = minOf(band.first, band.second) to
+                                maxOf(band.first, band.second)
 
-                    band?.let {
-                        lineDataSets += buildCoastingBandDataSet(it, yMax = yMax!!)
+                        lineDataSets += buildCoastingBandDataSet(normalizedBand, yMax = yMax!!)
                     }
-
 
                     chart.xAxis.valueFormatter = object : com.github.mikephil.charting.formatter.ValueFormatter() {
                         override fun getAxisLabel(value: Float, axis: com.github.mikephil.charting.components.AxisBase?): String {

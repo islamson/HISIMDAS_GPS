@@ -41,74 +41,92 @@ import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 import kotlin.math.abs
-import kotlin.math.absoluteValue
-import kotlin.math.roundToInt
+import kotlin.math.max
 import kotlin.math.sqrt
 
-
 class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(), SensorEventListener {
-    private var kalmanFilter : KalmanFilter? = null
+
+    private var fallbackFilter: TrackFallbackFilter? = null
+
     private var totalData = 0
     private var isGPSReady = true
     private var gpsCalibrationCounter = 1
+
     private var fusedLocationClient: FusedLocationProviderClient? = null
-    private var lastLocation: Location? = null
+    private var lastLocation: Location? = null               // son kabul edilen GPS (average edilmiş)
+    private var lastAcceptedGpsLocation: Location? = null    // hız hesabı için son kabul edilen GPS
 
-    private var lastProjectedLocation : Location? = null
-    private var trackLocationData : List<Location>? = null
+    private var isSystemReady: Boolean = false
+    private var sensorManager: SensorManager? = null
 
-    private var isSystemReady : Boolean = false
-    private var sensorManager : SensorManager? = null   // SensorManager to get data from AccelerationSensor
-    private var location_first : Location? = null
-    private var location_second : Location? = null
-    private var location_third : Location? = null
+    private var location_first: Location? = null
+    private var location_second: Location? = null
+    private var location_third: Location? = null
 
     private var locationProcessor = LocationProcessor
-    private var xPositionTotal : Double = 0.0
-    private var yPositionTotal : Double = 0.0
-    private var totalDistance = 0f
-    private var totalProjectedDistance = 0f
 
-    private var dt : Double = 0.0 // Common time difference in seconds between two data for usage in Gps & acceleration
+    private var totalDistance = 0f
+
+    private var dt: Double = 0.0
     private var currentLinearAcc = FloatArray(3)
     private var lastLinearAcc = FloatArray(3)
-    private var isFirstAccData : Boolean = true
-    private var currentAccTime : Long = 0L
-    private var lastAccTime : Long = 0L
+    private var isFirstAccData: Boolean = true
+    private var currentAccTime: Long = 0L
+    private var lastAccTime: Long = 0L
 
-    // 1 kerelik ivme yön kalibrasyonu ===
-    private var accSign: Float = 1f                 // +1 veya -1
-    private var accSignCalibrated: Boolean = false  // 1 kere set olunca true
-    private var lastAccX: Float = 0f                // sensörden gelen son X ivme (m/s^2)
-    private var lastAccY: Float = 0f                // sensörden gelen son Y ivme (m/s^2)
+    private var accSign: Float = 1f
+    private var accSignCalibrated: Boolean = false
+    private var lastAccX: Float = 0f
+    private var lastAccY: Float = 0f
 
+    private var filteredAccX: Float = 0f
+    private var filteredAccY: Float = 0f
+    private var filteredAccZ: Float = 0f
 
     private var lastVelocity: Float? = null
-    private var currentVelocity : Float? = null
-    private val maxSpeedDifference = homeViewModel.allConfigParams.value.maxSpeedDiff  // Maximum allowed speed difference in km/h
-    private val minSpeedDifference = homeViewModel.allConfigParams.value.minSpeedDiff //Minimum allowed speed difference in km/h
-    private val minPositionDifference = homeViewModel.allConfigParams.value.minPositionDiff //Minimum allowed position difference in m
+    private var currentVelocity: Float? = null
+
+    private var lastAcceptedMeasuredSpeedKmh: Float? = null
+
     private val calibrationDataCount = homeViewModel.allConfigParams.value.calibrationDataNumber
     private val accSamplingTime = homeViewModel.allConfigParams.value.accSamplingTime
     private val gpsNoDataTime = homeViewModel.allConfigParams.value.gpsNoDataTime
 
+    // GPS-only filtre parametreleri
+    private val minValidGpsDtSec = 0.01
+    private val maxReasonableSpeedKmh = 220f
+    private val maxPositiveGpsAccMps2 = 9
+    private val maxNegativeGpsAccMps2 = 12
+
+    // EMA / median benzeri yumuşatma için
+    private val recentMeasuredSpeeds = ArrayDeque<Float>()
+    private val speedWindowSize = 3
+    private var lastSmoothedGpsSpeed = 0f
+
+    private var gpsReacquireBlendCounter = 0
+    private val gpsReacquireBlendSamples = 4
+    private var lastFallbackSpeedBeforeGpsReturn = 0f
+
+    private var rejectedByDt = 0
+    private var rejectedBySpeed = 0
+    private var rejectedByAcceleration = 0
+
     // Loglama için tutulacak listler
     private val logGPSTime = mutableListOf<Double>()
-    private val logGPSLat  = mutableListOf<Double>()
-    private val logGPSLon  = mutableListOf<Double>()
-    private val logGPSAlt  = mutableListOf<Double>()
-    private val logGPSPos  = mutableListOf<Double>()
-    private val logGPSSpeed  = mutableListOf<Double>()
+    private val logGPSLat = mutableListOf<Double>()
+    private val logGPSLon = mutableListOf<Double>()
+    private val logGPSAlt = mutableListOf<Double>()
+    private val logGPSPos = mutableListOf<Double>()
+    private val logGPSSpeed = mutableListOf<Double>()
     private var logGPSDataNumber = 0
 
     private val logAccTime = mutableListOf<Double>()
-    private val logAccX    = mutableListOf<Double>()
-    private val logAccY    = mutableListOf<Double>()
-    private val logAccZ    = mutableListOf<Double>()
+    private val logAccX = mutableListOf<Double>()
+    private val logAccY = mutableListOf<Double>()
+    private val logAccZ = mutableListOf<Double>()
     private var logAccDataNumber = 0
 
-    // Logları app local database ine kaydetmek için
-    private lateinit var appContext: android.content.Context
+    private lateinit var appContext: Context
 
     private var tripOriginAbsCenter: Double? = null
     private var trackStartMs: Long? = null
@@ -116,17 +134,19 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
     private val _absCenterPos = MutableStateFlow(0f)
     val absCenterPos = _absCenterPos.asStateFlow()
 
-    private val _trackMovementTime = MutableStateFlow(0.0) // seconds
+    private val _trackMovementTime = MutableStateFlow(0.0)
     val trackMovementTime = _trackMovementTime.asStateFlow()
 
-    suspend fun loadTrackFromAssets(context: Context, trackId: Int){
-        trackLocationData = withContext(Dispatchers.IO){
-            locationProcessor.loadTrackLocations(context, trackId)
+    // Bu fonksiyon çağrılmaya devam edebilir diye imzayı koruyoruz.
+    // Yeni mimaride projected track kullanılmadığı için no-op.
+    suspend fun loadTrackFromAssets(context: Context, trackId: Int) {
+        withContext(Dispatchers.IO) {
+            // no-op
         }
     }
 
-    private var csvFile : File? = null
-    private var csvWriter : BufferedWriter? = null
+    private var csvFile: File? = null
+    private var csvWriter: BufferedWriter? = null
 
     private val _speed = MutableStateFlow(0f)
     val speed = _speed.asStateFlow()
@@ -137,86 +157,140 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
     private val _isTracking = mutableStateOf(false)
     val isTracking = _isTracking
 
-
     private val _dataNumber = MutableStateFlow(0)
     val dataNumber = _dataNumber.asStateFlow()
 
-    //Closed Position Counter for Speed = 0
     private var closedPositionCounter = 0
 
     private val locationCallback = object : LocationCallback() {
         override fun onLocationResult(result: LocationResult) {
-            result.lastLocation?.let { currentLocation ->
-                var currentConvertedLocation = currentLocation
-                var currentProjectedLocation = currentLocation
-                if(gpsCalibrationCounter == 0){
-                    lastLocation = currentLocation
-                    lastProjectedLocation = currentLocation
-                    lastVelocity = null
-                }
-                if (lastLocation == null) {
-                    println("Bu ilk deneme. lastLocation = null burada.")
-                    lastLocation = currentLocation
-                    return
-                }
-                // Last Location ile Current Location arasındaki dt 0.3 ten küçükse
-                // O veriyi salla! Böylelikle min position difference 0.92 olursa 1 km/h altını elemiş olursun
+            result.lastLocation?.let { rawLocation ->
+
                 location_first = location_second
                 location_second = location_third
-                location_third = currentLocation
+                location_third = rawLocation
 
-                if(location_first != null && location_second != null)
-                    currentConvertedLocation = locationProcessor.locationMeanCalculater(location_first!!, location_second!!, location_third!!)
+                val currentConvertedLocation =
+                    if (location_first != null && location_second != null) {
+                        locationProcessor.locationMeanCalculater(
+                            location_first!!,
+                            location_second!!,
+                            location_third!!
+                        )
+                    } else {
+                        rawLocation
+                    }
 
-                trackLocationData?.let{
-                    currentProjectedLocation = locationProcessor.findNearestPoint(currentConvertedLocation, it)!!
+                // Fallback modundan GPS'e dönüşte ilk veriyi anchor olarak kullan
+                if (gpsCalibrationCounter == 0) {
+                    lastLocation = cloneLocation(currentConvertedLocation)
+                    lastAcceptedGpsLocation = cloneLocation(currentConvertedLocation)
+                    lastVelocity = _speed.value
+                    lastAcceptedMeasuredSpeedKmh = _speed.value
+
+                    lastFallbackSpeedBeforeGpsReturn = _speed.value
+                    gpsReacquireBlendCounter = gpsReacquireBlendSamples
+
+                    gpsCalibrationCounter = 1
+                    return
                 }
 
-                if(lastProjectedLocation == null)
-                    lastProjectedLocation = currentProjectedLocation
+                if (lastLocation == null || lastAcceptedGpsLocation == null) {
+                    lastLocation = cloneLocation(currentConvertedLocation)
+                    lastAcceptedGpsLocation = cloneLocation(currentConvertedLocation)
+                    return
+                }
 
-                dt = (currentConvertedLocation.time - lastLocation!!.time) / 1000.0  //Time difference in seconds
-                val positionDifference = lastLocation!!.distanceTo(currentConvertedLocation)
-                currentVelocity = positionDifference.div(dt).times(3.6).toFloat()
+                val acceptedPrevLocation = lastAcceptedGpsLocation!!
+                val rawDtSec = (currentConvertedLocation.time - acceptedPrevLocation.time) / 1000.0
+                dt = rawDtSec
 
-                lastVelocity?.let {
-                    if(abs(it - currentVelocity!!) > maxSpeedDifference)
-                        return  //If maxSpeedDiff is so high, it means that the current gps data is anomaly, so we pass it and don't save in lastLocation object, if it was saved, the next valid data would be seen as anomaly because of the difference between valid currentLocation and invalid lastLocation
-                    else if(abs(it - currentVelocity!!) < minSpeedDifference){
-                        currentVelocity = it
-                    }
-                    if(abs(it - currentVelocity!!) <= maxSpeedDifference){
-                        if(positionDifference >= minPositionDifference){
-                            totalDistance += positionDifference
-                            totalProjectedDistance += lastProjectedLocation!!.distanceTo(currentProjectedLocation)
+                // dt saçmaysa GPS verisini hız hesabında kullanma, sadece anchor güncelle
+                if (rawDtSec <= 0.0) {
+                    lastLocation = cloneLocation(currentConvertedLocation)
+                    return
+                }
+
+                val distanceMeters = acceptedPrevLocation.distanceTo(currentConvertedLocation)
+                val measuredSpeedKmh = ((distanceMeters / rawDtSec) * 3.6).toFloat().coerceAtLeast(0f)
+                currentVelocity = measuredSpeedKmh
+
+                var isCurrentGpsValid = true
+
+                if (rawDtSec < minValidGpsDtSec) {
+                    isCurrentGpsValid = false
+                    rejectedByDt++
+                }
+
+                if (measuredSpeedKmh > maxReasonableSpeedKmh) {
+                    isCurrentGpsValid = false
+                    rejectedBySpeed++
+                }
+
+                lastAcceptedMeasuredSpeedKmh?.let { prevMeasuredSpeed ->
+                    val gpsAccMps2 = ((measuredSpeedKmh - prevMeasuredSpeed) / 3.6f) / rawDtSec.toFloat()
+
+                    if (totalData > calibrationDataCount) {
+                        if (gpsAccMps2 > maxPositiveGpsAccMps2 || gpsAccMps2 < -maxNegativeGpsAccMps2) {
+                            isCurrentGpsValid = false
+                            rejectedByAcceleration++
                         }
                     }
                 }
 
+                if (!isCurrentGpsValid) {
+                    Log.d(
+                        "GPS_FILTER",
+                        "Rejected GPS -> dt=$rawDtSec, dist=$distanceMeters, speed=$measuredSpeedKmh, " +
+                                "rejDt=$rejectedByDt, rejSpeed=$rejectedBySpeed, rejAcc=$rejectedByAcceleration"
+                    )
 
-                val xyPositions = locationProcessor.latLongToXY(currentConvertedLocation.latitude, currentConvertedLocation.longitude, lastLocation!!.latitude, lastLocation!!.longitude)
-                xPositionTotal += xyPositions.first.absoluteValue
-                yPositionTotal += xyPositions.second.absoluteValue
+                    lastLocation = cloneLocation(currentConvertedLocation)
+                    lastAcceptedGpsLocation = cloneLocation(currentConvertedLocation)
+                    return
+                }
+
+                // Kabul edilen GPS verisi
+                totalDistance += distanceMeters
+                lastAcceptedGpsLocation = cloneLocation(currentConvertedLocation)
+                lastAcceptedMeasuredSpeedKmh = measuredSpeedKmh
+
+                val filteredMeasuredSpeed = pushAndMedianLikeSmooth(measuredSpeedKmh)
+                var smoothedGpsSpeed = smoothGpsSpeed(filteredMeasuredSpeed)
+
+                if (gpsReacquireBlendCounter > 0) {
+                    val blendRatio =
+                        (gpsReacquireBlendSamples - gpsReacquireBlendCounter + 1).toFloat() / gpsReacquireBlendSamples.toFloat()
+
+                    smoothedGpsSpeed =
+                        (1f - blendRatio) * lastFallbackSpeedBeforeGpsReturn + blendRatio * smoothedGpsSpeed
+
+                    gpsReacquireBlendCounter--
+                }
 
                 viewModelScope.launch {
                     trackStartMs?.let { start ->
                         _trackMovementTime.emit((System.currentTimeMillis() - start) / 1000.0)
                     }
 
-                    if(totalData < calibrationDataCount){
+                    if (totalData < calibrationDataCount) {
                         _speed.emit(0f)
                         _position.emit(0f)
-                    }
+                    } else if (totalData == calibrationDataCount) {
+                        fallbackFilter = TrackFallbackFilter(
+                            processAccelStd = 0.8,
+                            positionStd = 3.0,
+                            speedStd = 2.0
+                        ).apply {
+                            init(
+                                initialPositionM = totalDistance.toDouble(),
+                                initialSpeedMps = (smoothedGpsSpeed / 3.6).toDouble()
+                            )
+                        }
 
-                    else if (totalData == calibrationDataCount){
-                        val lastXY = locationProcessor.latLongToXY(currentConvertedLocation.latitude, currentConvertedLocation.longitude, lastLocation!!.latitude, lastLocation!!.longitude)
-                        val initialXVelocity = lastXY.first.absoluteValue / dt
-                        val initialYVelocity = lastXY.second.absoluteValue / dt
-                        xPositionTotal = 0.0
-                        yPositionTotal = 0.0
-                        kalmanFilter = KalmanFilter(1.0, 10.0)
-                        kalmanFilter!!.init(0.0, 0.0, initialXVelocity, initialYVelocity)
                         isSystemReady = true
+                        lastSmoothedGpsSpeed = smoothedGpsSpeed
+
                         val dir = homeViewModel.selectedDirection.value ?: "West to East"
                         val sign = if (dir == "West to East") 1 else -1
                         val trainLength = homeViewModel.selectedTrain.value!!.totalLength
@@ -233,65 +307,60 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
                             },
                             speedProvider = { speed.value }
                         )
-
-                    }
-                    else{
-                        if(isGPSReady){
-                            val gpsSpeedMps = (currentVelocity!! / 3.6)
+                    } else {
+                        if (isGPSReady) {
+                            val gpsSpeedMps = (smoothedGpsSpeed / 3.6).toDouble()
                             val nowMs = currentConvertedLocation.time
 
-                            // 1 kerelik ivme yön kalibrasyonu (GPS varken)
+                            // 1 kerelik ivme yön kalibrasyonu
                             if (!accSignCalibrated) {
-                                val prevV = (lastVelocity!! / 3.6).toDouble()
-                                val prevT = lastLocation!!.time
-
+                                val prevV = (lastVelocity ?: 0f) / 3.6
+                                val prevT = acceptedPrevLocation.time
                                 val dtS = (nowMs - prevT) / 1000.0
+
                                 if (dtS > 0.15 && dtS < 2.0) {
-                                    val gpsAccMps2 = (gpsSpeedMps - prevV) / dtS   // m/s^2
-                                    val ax = lastAccX.toDouble()                   // m/s^2 (cihaz X)
-                                    // sadece anlamlı hızlanma anında kalibre et
-                                    if (kotlin.math.abs(gpsAccMps2) > 0.01 && kotlin.math.abs(ax) > 0.01) {
+                                    val gpsAccMps2 = (gpsSpeedMps - prevV) / dtS
+                                    val ax = lastAccX.toDouble()
+                                    if (abs(gpsAccMps2) > 0.01 && abs(ax) > 0.01) {
                                         accSign = if (gpsAccMps2 * ax >= 0) 1f else -1f
                                         accSignCalibrated = true
                                         Log.d("ACC_SIGN", "Calibrated accSign=$accSign (gpsAcc=$gpsAccMps2, ax=$ax)")
                                     }
                                 }
-
-                            }
-                            kalmanFilter!!.predict(0.0,0.0, dt)
-                            kalmanFilter!!.update(xPositionTotal, yPositionTotal)
-                            val kalmanUpdatedSpeed = kalmanFilter!!.getSpeed().toInt()
-                            println("Mean Speed From Kalman:${kalmanUpdatedSpeed}, Gps Speed:${currentVelocity}")
-
-                            if(lastLocation!!.distanceTo(currentConvertedLocation) < minPositionDifference){
-                                closedPositionCounter++
-                                if(abs(currentVelocity!! - lastVelocity!!) > minSpeedDifference)
-                                    if(currentVelocity!! <= 220f)
-                                        _speed.emit(currentVelocity!!)
-                                if(closedPositionCounter >= 8)
-                                    _speed.emit(0f)
                             }
 
-                            else{
-                                closedPositionCounter = 0
-                                if(currentVelocity!! <= 220f)
-                                    _speed.emit(currentVelocity!!)
-                                if(trackLocationData == null)
-                                    _position.emit(totalDistance)
-                                else
-                                    _position.emit(totalProjectedDistance)
-                            }
-
+                            // GPS varken UI tamamen GPS-only
+                            _position.emit(totalDistance)
+                            _speed.emit(smoothedGpsSpeed)
+                            closedPositionCounter = 0
                             updateAbsCenterFromPosition()
 
-                            val timeStamp = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.getDefault()).format(Date())
+                            // Fallback filtresini sıcak tut
+                            fallbackFilter?.predict((accSign * lastAccX).toDouble(), rawDtSec)
+                            fallbackFilter?.update(
+                                positionM = totalDistance.toDouble(),
+                                speedMps = smoothedGpsSpeed.toDouble() / 3.6
+                            )
+
+                            val timeStamp = SimpleDateFormat(
+                                "yyyy-MM-dd'T'HH:mm:ss",
+                                Locale.getDefault()
+                            ).format(Date())
+
                             csvWriter?.apply {
-                                write("$timeStamp,${currentConvertedLocation.latitude},${currentConvertedLocation.longitude},${currentConvertedLocation.altitude},${"-"},${"-"},${"-"},${_position.value.roundToInt()},${_speed.value.roundToInt()}")
+                                write(
+                                    "$timeStamp," +
+                                            "${currentConvertedLocation.latitude}," +
+                                            "${currentConvertedLocation.longitude}," +
+                                            "${currentConvertedLocation.altitude}," +
+                                            "${"-"},${"-"},${"-"}," +
+                                            "${_position.value.toInt()}," +
+                                            "${_speed.value.toInt()}"
+                                )
                                 newLine()
                                 flush()
                             }
 
-                            //Loglama için current data ların listlere aktarımı
                             logGPSSpeed.add(_speed.value.toDouble())
                             logGPSPos.add(_position.value.toDouble())
                             logGPSAlt.add(currentConvertedLocation.altitude)
@@ -300,19 +369,22 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
                             logGPSTime.add(_trackMovementTime.value)
                             logGPSDataNumber++
                         }
+
                         gpsCalibrationCounter++
-                        if(gpsCalibrationCounter > 3)
+                        if (gpsCalibrationCounter > 3) {
                             isGPSReady = true
+                        }
                     }
+
                     totalData++
                     _dataNumber.emit(totalData)
                 }
-                lastProjectedLocation = currentProjectedLocation
-                lastLocation!!.set(currentConvertedLocation)
-                if(isGPSReady)
+
+                lastLocation = cloneLocation(currentConvertedLocation)
+                if (isGPSReady) {
                     lastVelocity = _speed.value
+                }
             }
-            // If speed difference is too large, ignore this location update
         }
     }
 
@@ -324,51 +396,84 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
         _absCenterPos.emit(abs.toFloat())
     }
 
-
     @SuppressLint("MissingPermission")
-    fun startTracking(locationClient: FusedLocationProviderClient, sensorManager: SensorManager, context: Context) {
+    fun startTracking(
+        locationClient: FusedLocationProviderClient,
+        sensorManager: SensorManager,
+        context: Context
+    ) {
         fusedLocationClient = locationClient
         _isTracking.value = true
+
         lastLocation = null
-        lastProjectedLocation = null
+        lastAcceptedGpsLocation = null
         lastVelocity = null
+        currentVelocity = null
+        lastAcceptedMeasuredSpeedKmh = null
+
         totalDistance = 0f
+        totalData = 0
+        _dataNumber.value = 0
+
         location_first = null
         location_second = null
         location_third = null
-        totalData = 0
-        _dataNumber.value = 0
+
+        isSystemReady = false
+        isGPSReady = true
+        gpsCalibrationCounter = 1
+        closedPositionCounter = 0
+
+        fallbackFilter = null
 
         accSign = 1f
         accSignCalibrated = false
         lastAccX = 0f
         lastAccY = 0f
+        filteredAccX = 0f
+        filteredAccY = 0f
+        filteredAccZ = 0f
+
+        lastSmoothedGpsSpeed = 0f
+        gpsReacquireBlendCounter = 0
+        lastFallbackSpeedBeforeGpsReturn = 0f
+
+        rejectedByDt = 0
+        rejectedBySpeed = 0
+        rejectedByAcceleration = 0
+        recentMeasuredSpeeds.clear()
+
+        isFirstAccData = true
+        currentAccTime = 0L
+        lastAccTime = 0L
+        currentLinearAcc = FloatArray(3)
+        lastLinearAcc = FloatArray(3)
 
         this.sensorManager = sensorManager
         appContext = context.applicationContext
         trackStartMs = System.currentTimeMillis()
-        tripOriginAbsCenter = null // yeni trip başlıyor
-
+        tripOriginAbsCenter = null
 
         val linearAccSensor = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)
-
-        if(linearAccSensor != null){
+        if (linearAccSensor != null) {
             sensorManager.registerListener(this, linearAccSensor, SensorManager.SENSOR_DELAY_UI)
         }
 
         val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
         val fileName = "TrackingLog_$timeStamp.csv"
 
-        val documentsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS)
-        if(!documentsDir.exists())
+        val documentsDir =
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS)
+        if (!documentsDir.exists()) {
             documentsDir.mkdirs()
+        }
+
         csvFile = File(documentsDir, fileName)
         csvWriter = BufferedWriter(FileWriter(csvFile!!))
-
         csvWriter?.write("Timestamp,Latitude,Longitude,Altitude,X Acceleration(m/s²),Y Acceleration(m/s²),Z Acceleration(m/s²),Position(m),Speed(km/h)")
         csvWriter?.newLine()
 
-        val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY,50)
+        val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 50)
             .setMinUpdateIntervalMillis(50)
             .setWaitForAccurateLocation(true)
             .setMaxUpdateAgeMillis(50)
@@ -385,16 +490,18 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
 
     fun stopTracking() {
         homeViewModel.stopCoastingSimLoop()
+
         csvWriter?.close()
         csvWriter = null
         csvFile = null
+
         _isTracking.value = false
         fusedLocationClient?.removeLocationUpdates(locationCallback)
         this.sensorManager?.unregisterListener(this)
         isSystemReady = false
 
         val createdAtUtc = OffsetDateTime.now(ZoneOffset.UTC)
-            .format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)     // "2026-02-01T12:54:40+00:00"
+            .format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)
 
         val gpsBody = DasLogsGps(
             createdAt = createdAtUtc,
@@ -406,6 +513,7 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
             position = logGPSPos.toList(),
             speed = logGPSSpeed.toList()
         )
+
         val accBody = DasLogsAcc(
             createdAt = createdAtUtc,
             dataNumber = logAccDataNumber,
@@ -433,7 +541,6 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
         val direction = homeViewModel.selectedDirection.value ?: "West to East"
 
         if (token.isNullOrBlank() || driverId == null || trainId == null || trackId == null) {
-            // kuyruğu kilitleme, sadece log dosyaları lokal kalır
             return
         }
 
@@ -464,10 +571,18 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
 
         WorkManager.getInstance(appContext).enqueue(req)
 
+        logGPSTime.clear()
+        logGPSLat.clear()
+        logGPSLon.clear()
+        logGPSAlt.clear()
+        logGPSPos.clear()
+        logGPSSpeed.clear()
 
-        logGPSTime.clear(); logGPSLat.clear(); logGPSLon.clear()
-        logGPSAlt.clear();  logGPSPos.clear(); logGPSSpeed.clear()
-        logAccTime.clear(); logAccX.clear();   logAccY.clear(); logAccZ.clear()
+        logAccTime.clear()
+        logAccX.clear()
+        logAccY.clear()
+        logAccZ.clear()
+
         logGPSDataNumber = 0
         logAccDataNumber = 0
     }
@@ -478,111 +593,260 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
     }
 
     override fun onSensorChanged(event: SensorEvent?) {
-        if(event?.sensor?.type == Sensor.TYPE_LINEAR_ACCELERATION){
-            currentAccTime = event.timestamp
-            val threshold = 0.02f
-            for(i in 0..2){
-                if(abs(currentLinearAcc[i]) < threshold){
-                    currentLinearAcc[i] = 0f
-                }
+        if (event?.sensor?.type != Sensor.TYPE_LINEAR_ACCELERATION) return
 
-                if(abs(calculateNorm(event.values) - calculateNorm(lastLinearAcc)) >= 0.05f){
-                    currentLinearAcc[i] = event.values[i]
-                }
-            }
-            lastAccX = currentLinearAcc[0]
-            lastAccY = currentLinearAcc[1]
+        currentAccTime = event.timestamp
 
-            if(isFirstAccData){
-                lastAccTime = currentAccTime
-                isFirstAccData = false
-                return
-            }
+        // Hafif EMA low-pass
+        val alpha = 0.18f
+        filteredAccX = alpha * event.values[0] + (1f - alpha) * filteredAccX
+        filteredAccY = alpha * event.values[1] + (1f - alpha) * filteredAccY
+        filteredAccZ = alpha * event.values[2] + (1f - alpha) * filteredAccZ
 
-            if(isSystemReady){
-                val currentTime = System.currentTimeMillis()
-                val timeDiffLastLocat = (currentTime - lastLocation!!.time) / 1000.0    // Time difference in seconds between last location and current time
-                dt = (currentAccTime - lastAccTime) / 1_000_000_000.0 // time difference in seconds
-                if(dt > accSamplingTime){
-                    // Calculate speed and position via KalmanFilter
-                    val axSigned = (accSign * lastAccX).toDouble()
-                    val aySigned = (accSign * lastAccY).toDouble()
-                    kalmanFilter!!.predict(axSigned, aySigned, dt)
-                    val kalmanPredictedSpeed = kalmanFilter!!.getSpeed().toInt()
-                    val kalmanPredictedPosition = kalmanFilter!!.getPosition()
-                    if(abs(kalmanPredictedSpeed - _speed.value) > maxSpeedDifference)
-                        return  // If acc data is invalid, pass it and finishes the function so, data is not saved.
+        currentLinearAcc[0] = if (abs(filteredAccX) < 0.03f) 0f else filteredAccX
+        currentLinearAcc[1] = if (abs(filteredAccY) < 0.03f) 0f else filteredAccY
+        currentLinearAcc[2] = if (abs(filteredAccZ) < 0.03f) 0f else filteredAccZ
 
-                    if(timeDiffLastLocat > gpsNoDataTime) {
-                        viewModelScope.launch {
-                            // First state is so low position diff
-                            // It can because of either so frequent acc data or so low speed (almost 0)
-                            if ((kalmanPredictedPosition - _position.value) < minPositionDifference/5f) { //Since data come from acc sensor more frequently, pos difference is less than gps data so we divided min diff to 5
-                                closedPositionCounter++
-                                if (abs(_speed.value - kalmanPredictedSpeed) > minSpeedDifference)
-                                    _speed.emit(kalmanPredictedSpeed.toFloat())
-                                Log.d("Closed Position", "closedPositionCounter:${closedPositionCounter}")
-                                if (closedPositionCounter >= 15) {
-                                    _speed.emit(0f) // To prevent oscillation of speed around 0
-                                }
-                            }
-                            //Second state is remarkable position diff
-                            //However, if speed is high enough and speed diff is almost 0, position diff still can be high, so check if speed diff is important or not before changing speed
-                            else if ((kalmanPredictedPosition - _position.value) > minPositionDifference/5f) { // Since data come from acc sensor more frequently, pos difference is less than gps data so we divided min diff to 5
-                                if (abs(_speed.value - kalmanPredictedSpeed) > minSpeedDifference)
-                                    _speed.emit(kalmanPredictedSpeed.toFloat())
-                                _position.emit(kalmanPredictedPosition)
-                                updateAbsCenterFromPosition()
-                                closedPositionCounter = 0
-                                Log.d("Closed Position", "counter 0 landı (ivme)")
-                            }
-                        }
-                        totalProjectedDistance = _position.value
-                        totalDistance = _position.value
-                        lastVelocity = null
-                        isGPSReady = false
-                        gpsCalibrationCounter = 0
-                        location_first = null
-                        location_second = null
-                        location_third = null
-                        val timeStamp = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.getDefault()).format(Date())
+        lastAccX = currentLinearAcc[0]
+        lastAccY = currentLinearAcc[1]
 
-                        csvWriter?.apply {
-                            write("$timeStamp,${"-"},${"-"},${"-"},${axSigned},${aySigned},${currentLinearAcc[2] * accSign},${_position.value.roundToInt()},${_speed.value.roundToInt()}")
-                            newLine()
-                            flush()
-                        }
-                        //Loglama için current data ların listlere aktarımı
-                        logGPSSpeed.add(_speed.value.toDouble())
-                        logGPSPos.add(_position.value.toDouble())
-                        logGPSAlt.add(-1.0)
-                        logGPSLat.add(-1.0)
-                        logGPSLon.add(-1.0)
-                        logGPSTime.add(-timeDiffLastLocat)
-                        logGPSDataNumber++
-                    }
-                    lastLinearAcc = currentLinearAcc
-                    lastAccTime = currentAccTime
-
-                    //Acc Logları için
-                    logAccX.add(axSigned)
-                    logAccY.add(aySigned)
-                    logAccZ.add((currentLinearAcc[2] * accSign).toDouble())
-                    logAccTime.add(_trackMovementTime.value)
-                    logAccDataNumber++
-                }
-            }
-            else{
-                lastLinearAcc = currentLinearAcc
-                lastAccTime = currentAccTime
-            }
+        if (isFirstAccData) {
+            lastAccTime = currentAccTime
+            isFirstAccData = false
+            return
         }
+
+        if (!isSystemReady || lastLocation == null) {
+            lastLinearAcc = currentLinearAcc.copyOf()
+            lastAccTime = currentAccTime
+            return
+        }
+
+        val currentTime = System.currentTimeMillis()
+        val timeDiffLastLocat = (currentTime - lastLocation!!.time) / 1000.0
+        dt = (currentAccTime - lastAccTime) / 1_000_000_000.0
+
+        if (dt <= accSamplingTime) {
+            return
+        }
+
+        val axSigned = (accSign * lastAccX).toDouble()
+        val aySigned = (accSign * lastAccY).toDouble()
+        val azSigned = (accSign * currentLinearAcc[2]).toDouble()
+
+        if (timeDiffLastLocat > gpsNoDataTime) {
+            fallbackFilter?.predict(axSigned, dt)
+            lastFallbackSpeedBeforeGpsReturn = _speed.value
+            val predictedSpeedKmh = fallbackFilter?.getSpeedKmh()?.coerceAtLeast(0f) ?: _speed.value
+            val predictedPositionM = fallbackFilter?.getPositionM()?.toFloat()?.coerceAtLeast(_position.value) ?: _position.value
+
+            viewModelScope.launch {
+                val displaySpeed = smoothFallbackSpeed(predictedSpeedKmh)
+
+                if (predictedPositionM - _position.value < 0.05f && displaySpeed < 2f) {
+                    closedPositionCounter++
+                    if (closedPositionCounter >= 15) {
+                        _speed.emit(0f)
+                    } else {
+                        _speed.emit(displaySpeed)
+                    }
+                } else {
+                    closedPositionCounter = 0
+                    _speed.emit(displaySpeed)
+                    _position.emit(predictedPositionM)
+                    updateAbsCenterFromPosition()
+                }
+            }
+
+            totalDistance = max(totalDistance, predictedPositionM)
+            lastVelocity = null
+            isGPSReady = false
+            gpsCalibrationCounter = 0
+            location_first = null
+            location_second = null
+            location_third = null
+
+            val timeStamp = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.getDefault()).format(Date())
+
+            csvWriter?.apply {
+                write(
+                    "$timeStamp," +
+                            "${"-"},${"-"},${"-"}," +
+                            "$axSigned,$aySigned,$azSigned," +
+                            "${_position.value.toInt()}," +
+                            "${_speed.value.toInt()}"
+                )
+                newLine()
+                flush()
+            }
+
+            // GPS yokken de GPS log listesine placeholder olarak ekleme mantığını koruyoruz
+            logGPSSpeed.add(_speed.value.toDouble())
+            logGPSPos.add(_position.value.toDouble())
+            logGPSAlt.add(-1.0)
+            logGPSLat.add(-1.0)
+            logGPSLon.add(-1.0)
+            logGPSTime.add(-timeDiffLastLocat)
+            logGPSDataNumber++
+        }
+
+        lastLinearAcc = currentLinearAcc.copyOf()
+        lastAccTime = currentAccTime
+
+        logAccX.add(axSigned)
+        logAccY.add(aySigned)
+        logAccZ.add(azSigned)
+        logAccTime.add(_trackMovementTime.value)
+        logAccDataNumber++
     }
 
-    override fun onAccuracyChanged(p0: Sensor?, p1: Int) {
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
     }
 
     fun calculateNorm(acceleration: FloatArray): Float {
-        return sqrt(acceleration[0] * acceleration[0] + acceleration[1] * acceleration[1] + acceleration[2] * acceleration[2])
+        return sqrt(
+            acceleration[0] * acceleration[0] +
+                    acceleration[1] * acceleration[1] +
+                    acceleration[2] * acceleration[2]
+        )
     }
+
+    private fun pushAndMedianLikeSmooth(speed: Float): Float {
+        recentMeasuredSpeeds.add(speed)
+        while (recentMeasuredSpeeds.size > speedWindowSize) {
+            recentMeasuredSpeeds.removeFirstOrNull()
+        }
+
+        val sorted = recentMeasuredSpeeds.sorted()
+        return when (sorted.size) {
+            0 -> speed
+            1 -> sorted[0]
+            2 -> (sorted[0] + sorted[1]) / 2f
+            else -> sorted[1]
+        }
+    }
+
+    private fun smoothGpsSpeed(rawSpeed: Float): Float {
+        val alpha = when {
+            rawSpeed < 10f -> 0.18f
+            rawSpeed < 20f -> 0.28f
+            rawSpeed < 40f -> 0.40f
+            else -> 0.52f
+        }
+
+        val out = if (lastSmoothedGpsSpeed == 0f) {
+            rawSpeed
+        } else {
+            alpha * rawSpeed + (1f - alpha) * lastSmoothedGpsSpeed
+        }
+
+        lastSmoothedGpsSpeed = out.coerceAtLeast(0f)
+        return lastSmoothedGpsSpeed
+    }
+
+    private fun smoothFallbackSpeed(rawSpeed: Float): Float {
+        val alpha = 0.10f
+        val out = alpha * rawSpeed + (1f - alpha) * _speed.value
+        return out.coerceAtLeast(0f)
+    }
+
+    private fun cloneLocation(location: Location): Location {
+        return Location(location)
+    }
+}
+
+private class TrackFallbackFilter(
+    private val processAccelStd: Double,
+    private val positionStd: Double,
+    private val speedStd: Double
+) {
+    private var positionM = 0.0
+    private var speedMps = 0.0
+
+    // Kovaryans matrisi
+    private var p00 = 10.0
+    private var p01 = 0.0
+    private var p10 = 0.0
+    private var p11 = 10.0
+
+    fun init(initialPositionM: Double, initialSpeedMps: Double) {
+        positionM = initialPositionM
+        speedMps = initialSpeedMps
+        p00 = 5.0
+        p01 = 0.0
+        p10 = 0.0
+        p11 = 5.0
+    }
+
+    fun predict(accMps2: Double, dtRaw: Double) {
+        val dt = dtRaw.coerceIn(0.001, 1.0)
+
+        positionM += speedMps * dt + 0.5 * accMps2 * dt * dt
+        speedMps += accMps2 * dt
+        if (speedMps < 0.0) speedMps = 0.0
+
+        val q = processAccelStd * processAccelStd
+        val dt2 = dt * dt
+        val dt3 = dt2 * dt
+        val dt4 = dt2 * dt2
+
+        val q00 = q * dt4 / 4.0
+        val q01 = q * dt3 / 2.0
+        val q10 = q * dt3 / 2.0
+        val q11 = q * dt2
+
+        val newP00 = p00 + dt * (p10 + p01) + dt2 * p11 + q00
+        val newP01 = p01 + dt * p11 + q01
+        val newP10 = p10 + dt * p11 + q10
+        val newP11 = p11 + q11
+
+        p00 = newP00
+        p01 = newP01
+        p10 = newP10
+        p11 = newP11
+    }
+
+    fun update(positionM: Double, speedMps: Double) {
+        // H = I olduğu için sade form
+        val r00 = positionStd * positionStd
+        val r11 = speedStd * speedStd
+
+        val s00 = p00 + r00
+        val s01 = p01
+        val s10 = p10
+        val s11 = p11 + r11
+
+        val det = s00 * s11 - s01 * s10
+        if (abs(det) < 1e-9) return
+
+        val invS00 = s11 / det
+        val invS01 = -s01 / det
+        val invS10 = -s10 / det
+        val invS11 = s00 / det
+
+        val k00 = p00 * invS00 + p01 * invS10
+        val k01 = p00 * invS01 + p01 * invS11
+        val k10 = p10 * invS00 + p11 * invS10
+        val k11 = p10 * invS01 + p11 * invS11
+
+        val y0 = positionM - this.positionM
+        val y1 = speedMps - this.speedMps
+
+        this.positionM += k00 * y0 + k01 * y1
+        this.speedMps += k10 * y0 + k11 * y1
+        if (this.speedMps < 0.0) this.speedMps = 0.0
+
+        val newP00 = (1.0 - k00) * p00 - k01 * p10
+        val newP01 = (1.0 - k00) * p01 - k01 * p11
+        val newP10 = -k10 * p00 + (1.0 - k11) * p10
+        val newP11 = -k10 * p01 + (1.0 - k11) * p11
+
+        p00 = newP00
+        p01 = newP01
+        p10 = newP10
+        p11 = newP11
+    }
+
+    fun getPositionM(): Double = positionM
+    fun getSpeedKmh(): Float = (speedMps * 3.6).toFloat()
 }
