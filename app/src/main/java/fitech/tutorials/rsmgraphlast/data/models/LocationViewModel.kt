@@ -56,6 +56,9 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
     private var lastLocation: Location? = null               // son kabul edilen GPS (average edilmiş)
     private var lastAcceptedGpsLocation: Location? = null    // hız hesabı için son kabul edilen GPS
 
+    private var lastProjectedLocation: Location? = null
+    private var trackLocationData: List<Location>? = null
+
     private var isSystemReady: Boolean = false
     private var sensorManager: SensorManager? = null
 
@@ -63,6 +66,7 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
     private var locationProcessor = LocationProcessor
 
     private var totalDistance = 0f
+    private var totalProjectedDistance = 0f
 
     private var dt: Double = 0.0
     private var currentLinearAcc = FloatArray(3)
@@ -137,11 +141,33 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
     private val _trackMovementTime = MutableStateFlow(0.0)
     val trackMovementTime = _trackMovementTime.asStateFlow()
 
-    // Bu fonksiyon çağrılmaya devam edebilir diye imzayı koruyoruz.
-    // Yeni mimaride projected track kullanılmadığı için no-op.
     suspend fun loadTrackFromAssets(context: Context, trackId: Int) {
-        withContext(Dispatchers.IO) {
-            // no-op
+        trackLocationData = withContext(Dispatchers.IO) {
+            val selectedTrack = homeViewModel.selectedTrack.value
+
+            val latitudes = selectedTrack?.latitude
+            val longitudes = selectedTrack?.longitude
+            val altitudes = selectedTrack?.altitude
+
+            if (
+                latitudes != null &&
+                longitudes != null &&
+                latitudes.isNotEmpty() &&
+                longitudes.isNotEmpty() &&
+                latitudes.size == longitudes.size
+            ) {
+                latitudes.indices.map { i ->
+                    Location("track_model").apply {
+                        latitude = latitudes[i]
+                        longitude = longitudes[i]
+                        if (altitudes != null && i < altitudes.size) {
+                            altitude = altitudes[i]
+                        }
+                    }
+                }
+            } else {
+                locationProcessor.loadTrackLocations(context, trackId)
+            }
         }
     }
 
@@ -165,6 +191,8 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
     private val locationCallback = object : LocationCallback() {
         override fun onLocationResult(result: LocationResult) {
             result.lastLocation?.let { rawLocation ->
+
+                refreshMovementDurationNow()
 
                 val currentConvertedLocation = rawLocation
 
@@ -201,6 +229,10 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
                 val distanceMeters = acceptedPrevLocation.distanceTo(currentConvertedLocation)
                 val measuredSpeedKmh = ((distanceMeters / rawDtSec) * 3.6).toFloat().coerceAtLeast(0f)
                 currentVelocity = measuredSpeedKmh
+
+                val currentProjectedLocation = trackLocationData?.let {
+                    locationProcessor.findNearestPoint(currentConvertedLocation, it)
+                }
 
                 var isCurrentGpsValid = true
 
@@ -240,7 +272,9 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
                 // Kalibrasyondan sonraki ilk accepted örneği de 0 kabul et
                 if (pendingZeroAfterCalibration) {
                     totalDistance = 0f
+                    totalProjectedDistance = 0f
                     lastAcceptedGpsLocation = cloneLocation(currentConvertedLocation)
+                    lastProjectedLocation = currentProjectedLocation?.let { cloneLocation(it) }
                     lastAcceptedMeasuredSpeedKmh = 0f
                     lastSmoothedGpsSpeed = 0f
                     lastLightSmoothedMeasuredSpeed = 0f
@@ -258,7 +292,16 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
                 }
 
                 // Kabul edilen GPS verisi
+                // Kabul edilen GPS verisi
                 totalDistance += distanceMeters
+
+                if (currentProjectedLocation != null) {
+                    if (lastProjectedLocation != null) {
+                        totalProjectedDistance += lastProjectedLocation!!.distanceTo(currentProjectedLocation)
+                    }
+                    lastProjectedLocation = cloneLocation(currentProjectedLocation)
+                }
+
                 lastAcceptedGpsLocation = cloneLocation(currentConvertedLocation)
                 lastAcceptedMeasuredSpeedKmh = measuredSpeedKmh
 
@@ -276,10 +319,6 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
                 }
 
                 viewModelScope.launch {
-                    trackStartMs?.let { start ->
-                        _trackMovementTime.emit((System.currentTimeMillis() - start) / 1000.0)
-                    }
-
                     if (totalData < calibrationDataCount) {
                         _speed.emit(0f)
                         _position.emit(0f)
@@ -290,7 +329,7 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
                             speedStd = 2.0
                         ).apply {
                             init(
-                                initialPositionM = 0.0,
+                                initialPositionM = getDisplayedPosition().toDouble(),
                                 initialSpeedMps = 0.0
                             )
                         }
@@ -347,7 +386,7 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
                             }
 
                             // GPS varken UI tamamen GPS-only
-                            _position.emit(totalDistance)
+                            _position.emit(getDisplayedPosition())
                             _speed.emit(smoothedGpsSpeed)
                             closedPositionCounter = 0
                             updateAbsCenterFromPosition()
@@ -355,7 +394,7 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
                             // Fallback filtresini sıcak tut
                             fallbackFilter?.predict((accSign * getDominantAccelerationAxisValue()).toDouble(), rawDtSec)
                             fallbackFilter?.update(
-                                positionM = totalDistance.toDouble(),
+                                positionM = getDisplayedPosition().toDouble(),
                                 speedMps = filteredMeasuredSpeed.toDouble() / 3.6
                             )
 
@@ -379,7 +418,7 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
                             }
 
                             logGPSSpeed.add(_speed.value.toDouble())
-                            logGPSPos.add(_position.value.toDouble())
+                            logGPSPos.add(getGpsLogAbsolutePosition())
                             logGPSAlt.add(currentConvertedLocation.altitude)
                             logGPSLat.add(currentConvertedLocation.latitude)
                             logGPSLon.add(currentConvertedLocation.longitude)
@@ -414,6 +453,29 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
         _absCenterPos.emit(abs.toFloat())
     }
 
+    private fun getDisplayedPosition(): Float {
+        return if (!trackLocationData.isNullOrEmpty()) totalProjectedDistance else totalDistance
+    }
+
+    private fun refreshMovementDurationNow() {
+        trackStartMs?.let { start ->
+            _trackMovementTime.value = (System.currentTimeMillis() - start) / 1000.0
+        }
+    }
+
+    private fun getGpsLogAbsolutePosition(): Double {
+        val initialBerth = homeViewModel.selectedInitialStation.value?.berthingPosition ?: 0f
+        val trainLength = homeViewModel.selectedTrain.value?.totalLength ?: 0.0
+        val traveled = _position.value.toDouble()
+        val dir = homeViewModel.selectedDirection.value ?: "West to East"
+
+        return if (dir == "West to East") {
+            initialBerth.toDouble() + (trainLength / 2.0) + traveled
+        } else {
+            initialBerth.toDouble() - (trainLength / 2.0) + traveled
+        }
+    }
+
     @SuppressLint("MissingPermission")
     fun startTracking(
         locationClient: FusedLocationProviderClient,
@@ -425,11 +487,13 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
 
         lastLocation = null
         lastAcceptedGpsLocation = null
+        lastProjectedLocation = null
         lastVelocity = null
         currentVelocity = null
         lastAcceptedMeasuredSpeedKmh = null
 
         totalDistance = 0f
+        totalProjectedDistance = 0f
         totalData = 0
         _dataNumber.value = 0
 
@@ -471,6 +535,7 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
         this.sensorManager = sensorManager
         appContext = context.applicationContext
         trackStartMs = System.currentTimeMillis()
+        _trackMovementTime.value = 0.0
         tripOriginAbsCenter = null
 
         val linearAccSensor = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)
@@ -614,6 +679,7 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
     override fun onSensorChanged(event: SensorEvent?) {
         if (event?.sensor?.type != Sensor.TYPE_LINEAR_ACCELERATION) return
 
+        refreshMovementDurationNow()
         currentAccTime = event.timestamp
 
         // Hafif EMA low-pass
@@ -692,6 +758,7 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
             }
 
             totalDistance = max(totalDistance, predictedPositionM)
+            totalProjectedDistance = max(totalProjectedDistance, predictedPositionM)
             lastVelocity = null
             isGPSReady = false
             gpsCalibrationCounter = 0
@@ -713,11 +780,11 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
 
             // GPS yokken de GPS log listesine placeholder olarak ekleme mantığını koruyoruz
             logGPSSpeed.add(_speed.value.toDouble())
-            logGPSPos.add(_position.value.toDouble())
+            logGPSPos.add(getGpsLogAbsolutePosition())
             logGPSAlt.add(-1.0)
             logGPSLat.add(-1.0)
             logGPSLon.add(-1.0)
-            logGPSTime.add(-timeDiffLastLocat)
+            logGPSTime.add(_trackMovementTime.value)
             logGPSDataNumber++
         }
 

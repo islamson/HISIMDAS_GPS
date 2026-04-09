@@ -182,7 +182,8 @@ class CoastingEngine(
                     val currentPos = positionProvider!!.invoke()
                     val finalStation = selectedFinal!!
 
-                    val remaining = finalStation.naturalJourneyTime - movementDuration
+                    val totalNaturalJourneyTime = computeNaturalJourneyTimeFromInitialToFinal()
+                    val remaining = totalNaturalJourneyTime - movementDuration
                     val coastingTimeInput = remaining.coerceAtLeast(0.0)
 
 
@@ -279,6 +280,23 @@ class CoastingEngine(
     // Hesap parçaları
     private fun stationsInDirection(track: Track, direction: String): List<Station> =
         if (direction == "West to East") track.stations else track.stationsInverted
+
+    private fun computeNaturalJourneyTimeFromInitialToFinal(): Double {
+        val track = selectedTrack ?: return 0.0
+        val dir = direction ?: return 0.0
+        val initial = selectedInitial ?: return 0.0
+        val final = selectedFinal ?: return 0.0
+
+        val stations = stationsInDirection(track, dir)
+        val initialIdx = stations.indexOfFirst { it.id == initial.id }
+        val finalIdx = stations.indexOfFirst { it.id == final.id }
+
+        if (initialIdx == -1 || finalIdx == -1 || finalIdx <= initialIdx) return 0.0
+
+        return stations
+            .subList(initialIdx + 1, finalIdx + 1)   // initial hariç, final dahil
+            .fold(0.0) { acc, station -> acc + station.naturalJourneyTime.toDouble() }
+    }
 
     private fun findNextStation(track: Track, direction: String, currentPosition: Float): Station? {
         val list = stationsInDirection(track, direction)
