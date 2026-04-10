@@ -4,6 +4,7 @@ import DasReferencePointsBundle
 import android.app.Application
 import android.content.Context
 import android.util.Base64
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.github.mikephil.charting.data.Entry

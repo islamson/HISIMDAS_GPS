@@ -80,6 +80,23 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
     private var lastAccX: Float = 0f
     private var lastAccY: Float = 0f
 
+    private var rotationVectorValues: FloatArray? = null
+    private val rotationMatrix = FloatArray(9)
+
+    private var accOffsetX = 0f
+    private var accOffsetY = 0f
+    private var accOffsetZ = 0f
+
+    private var accOffsetSampleCount = 0
+    private var accOffsetSumX = 0f
+    private var accOffsetSumY = 0f
+    private var accOffsetSumZ = 0f
+    private var accOffsetsReady = false
+
+    private var lastTrackBearingDeg: Float? = null
+
+    private var lastDisplayedGpsSpeedKmh = 0f
+
     private var filteredAccX: Float = 0f
     private var filteredAccY: Float = 0f
     private var filteredAccZ: Float = 0f
@@ -93,26 +110,22 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
     private val accSamplingTime = homeViewModel.allConfigParams.value.accSamplingTime
     private val gpsNoDataTime = homeViewModel.allConfigParams.value.gpsNoDataTime
 
-    // GPS-only filtre parametreleri
-    private val minValidGpsDtSec = 0.01
+    // GPS filtre parametreleri: reject yerine clamp + hafif adaptive smoothing
     private val maxReasonableSpeedKmh = 220f
-    private val maxPositiveGpsAccMps2 = 9
-    private val maxNegativeGpsAccMps2 = 12
+    private val maxPositiveGpsAccMps2 = 2.2f
+    private val maxNegativeGpsAccMps2 = 3.0f
+    private val gpsSpeedMarginKmh = 6f
 
-    // EMA / median benzeri yumuşatma için
-    private val recentMeasuredSpeeds = ArrayDeque<Float>()
-    private var lastSmoothedGpsSpeed = 0f
+    private var fallbackStartedAtNs: Long? = null
+    private var lastGpsElapsedRealtimeNs: Long = 0L
 
     private var gpsReacquireBlendCounter = 0
-    private val gpsReacquireBlendSamples = 4
+    private val gpsReacquireBlendSamples = 2
     private var lastFallbackSpeedBeforeGpsReturn = 0f
-
-    private var pendingZeroAfterCalibration = false
-    private var fallbackStartedAtNs: Long? = null
-    private var lastLightSmoothedMeasuredSpeed = 0f
 
     private var rejectedByDt = 0
     private var rejectedBySpeed = 0
+    private var rejectedBySpeedDiff = 0
     private var rejectedByAcceleration = 0
 
     // Loglama için tutulacak listler
@@ -196,6 +209,10 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
 
                 val currentConvertedLocation = rawLocation
 
+                if (currentConvertedLocation.elapsedRealtimeNanos > 0L) {
+                    lastGpsElapsedRealtimeNs = currentConvertedLocation.elapsedRealtimeNanos
+                }
+
                 // Fallback modundan GPS'e dönüşte ilk veriyi anchor olarak kullan
                 if (gpsCalibrationCounter == 0) {
                     lastLocation = cloneLocation(currentConvertedLocation)
@@ -217,96 +234,54 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
                 }
 
                 val acceptedPrevLocation = lastAcceptedGpsLocation!!
-                val rawDtSec = (currentConvertedLocation.time - acceptedPrevLocation.time) / 1000.0
+
+                val rawDtSec = if (
+                    currentConvertedLocation.elapsedRealtimeNanos > 0L &&
+                    acceptedPrevLocation.elapsedRealtimeNanos > 0L
+                ) {
+                    (currentConvertedLocation.elapsedRealtimeNanos - acceptedPrevLocation.elapsedRealtimeNanos) / 1_000_000_000.0
+                } else {
+                    (currentConvertedLocation.time - acceptedPrevLocation.time) / 1000.0
+                }
+
                 dt = rawDtSec
 
-                // dt saçmaysa GPS verisini hız hesabında kullanma, sadece anchor güncelle
                 if (rawDtSec <= 0.0) {
+                    rejectedByDt++
                     lastLocation = cloneLocation(currentConvertedLocation)
                     return
                 }
 
                 val distanceMeters = acceptedPrevLocation.distanceTo(currentConvertedLocation)
-                val measuredSpeedKmh = ((distanceMeters / rawDtSec) * 3.6).toFloat().coerceAtLeast(0f)
-                currentVelocity = measuredSpeedKmh
 
-                val currentProjectedLocation = trackLocationData?.let {
-                    locationProcessor.findNearestPoint(currentConvertedLocation, it)
+                if (distanceMeters > 2f) {
+                    lastTrackBearingDeg = acceptedPrevLocation.bearingTo(currentConvertedLocation)
                 }
 
-                var isCurrentGpsValid = true
+                val geometricSpeedKmh =
+                    ((distanceMeters / rawDtSec) * 3.6).toFloat().coerceAtLeast(0f)
 
-                if (rawDtSec < minValidGpsDtSec) {
-                    isCurrentGpsValid = false
-                    rejectedByDt++
-                }
-
-                if (measuredSpeedKmh > maxReasonableSpeedKmh) {
-                    isCurrentGpsValid = false
-                    rejectedBySpeed++
-                }
-
-                lastAcceptedMeasuredSpeedKmh?.let { prevMeasuredSpeed ->
-                    val gpsAccMps2 = ((measuredSpeedKmh - prevMeasuredSpeed) / 3.6f) / rawDtSec.toFloat()
-
-                    if (totalData > calibrationDataCount) {
-                        if (gpsAccMps2 > maxPositiveGpsAccMps2 || gpsAccMps2 < -maxNegativeGpsAccMps2) {
-                            isCurrentGpsValid = false
-                            rejectedByAcceleration++
-                        }
-                    }
-                }
-
-                if (!isCurrentGpsValid) {
-                    Log.d(
-                        "GPS_FILTER",
-                        "Rejected GPS -> dt=$rawDtSec, dist=$distanceMeters, speed=$measuredSpeedKmh, " +
-                                "rejDt=$rejectedByDt, rejSpeed=$rejectedBySpeed, rejAcc=$rejectedByAcceleration"
-                    )
-
-                    lastLocation = cloneLocation(currentConvertedLocation)
-                    lastAcceptedGpsLocation = cloneLocation(currentConvertedLocation)
-                    return
-                }
-
-                // Kalibrasyondan sonraki ilk accepted örneği de 0 kabul et
-                if (pendingZeroAfterCalibration) {
-                    totalDistance = 0f
-                    totalProjectedDistance = 0f
-                    lastAcceptedGpsLocation = cloneLocation(currentConvertedLocation)
-                    lastProjectedLocation = currentProjectedLocation?.let { cloneLocation(it) }
-                    lastAcceptedMeasuredSpeedKmh = 0f
-                    lastSmoothedGpsSpeed = 0f
-                    lastLightSmoothedMeasuredSpeed = 0f
-                    pendingZeroAfterCalibration = false
-
-                    viewModelScope.launch {
-                        _speed.emit(0f)
-                        _position.emit(0f)
-                        updateAbsCenterFromPosition()
+                val providerSpeedKmh =
+                    if (currentConvertedLocation.hasSpeed()) {
+                        (currentConvertedLocation.speed * 3.6f).coerceAtLeast(0f)
+                    } else {
+                        geometricSpeedKmh
                     }
 
-                    lastLocation = cloneLocation(currentConvertedLocation)
-                    totalData++
-                    return
-                }
+                val rawSpeedKmh = (0.7f * providerSpeedKmh + 0.3f * geometricSpeedKmh)
+                    .coerceAtMost(maxReasonableSpeedKmh)
 
-                // Kabul edilen GPS verisi
-                // Kabul edilen GPS verisi
+                currentVelocity = rawSpeedKmh
+
                 totalDistance += distanceMeters
-
-                if (currentProjectedLocation != null) {
-                    if (lastProjectedLocation != null) {
-                        totalProjectedDistance += lastProjectedLocation!!.distanceTo(currentProjectedLocation)
-                    }
-                    lastProjectedLocation = cloneLocation(currentProjectedLocation)
-                }
-
                 lastAcceptedGpsLocation = cloneLocation(currentConvertedLocation)
-                lastAcceptedMeasuredSpeedKmh = measuredSpeedKmh
 
-                val filteredMeasuredSpeed = pushAndMedianLikeSmooth(measuredSpeedKmh)
-                var smoothedGpsSpeed = smoothGpsSpeed(filteredMeasuredSpeed)
+                var smoothedGpsSpeed = adaptiveGpsSpeedFilter(rawSpeedKmh, rawDtSec)
+
+                Log.d(
+                    "GPS_FILTER",
+                    "dt=$rawDtSec dist=$distanceMeters provider=$providerSpeedKmh geom=$geometricSpeedKmh disp=$smoothedGpsSpeed"
+                )
 
                 if (gpsReacquireBlendCounter > 0) {
                     val blendRatio =
@@ -324,9 +299,9 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
                         _position.emit(0f)
                     } else if (totalData == calibrationDataCount) {
                         fallbackFilter = TrackFallbackFilter(
-                            processAccelStd = 0.8,
+                            processAccelStd = 1.8,
                             positionStd = 3.0,
-                            speedStd = 2.0
+                            speedStd = 1.2
                         ).apply {
                             init(
                                 initialPositionM = getDisplayedPosition().toDouble(),
@@ -335,13 +310,10 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
                         }
 
                         isSystemReady = true
-                        pendingZeroAfterCalibration = true
-
                         totalDistance = 0f
                         lastAcceptedGpsLocation = cloneLocation(currentConvertedLocation)
                         lastAcceptedMeasuredSpeedKmh = 0f
-                        lastSmoothedGpsSpeed = 0f
-                        lastLightSmoothedMeasuredSpeed = 0f
+                        lastDisplayedGpsSpeedKmh = 0f
 
                         _speed.emit(0f)
                         _position.emit(0f)
@@ -376,11 +348,11 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
 
                                 if (dtS > 0.15 && dtS < 2.0) {
                                     val gpsAccMps2 = (gpsSpeedMps - prevV) / dtS
-                                    val dominantAcc = getDominantAccelerationAxisValue().toDouble()
-                                    if (abs(gpsAccMps2) > 0.01 && abs(dominantAcc) > 0.01) {
-                                        accSign = if (gpsAccMps2 * dominantAcc >= 0) 1f else -1f
+                                    val alongTrackAcc = getAccelerationAlongTrack().toDouble()
+                                    if (abs(gpsAccMps2) > 0.01 && abs(alongTrackAcc) > 0.01) {
+                                        accSign = if (gpsAccMps2 * alongTrackAcc >= 0) 1f else -1f
                                         accSignCalibrated = true
-                                        Log.d("ACC_SIGN", "Calibrated accSign=$accSign (gpsAcc=$gpsAccMps2, dominantAcc=$dominantAcc)")
+                                        Log.d("ACC_SIGN", "Calibrated accSign=$accSign (gpsAcc=$gpsAccMps2, alongTrackAcc=$alongTrackAcc)")
                                     }
                                 }
                             }
@@ -392,10 +364,10 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
                             updateAbsCenterFromPosition()
 
                             // Fallback filtresini sıcak tut
-                            fallbackFilter?.predict((accSign * getDominantAccelerationAxisValue()).toDouble(), rawDtSec)
+                            fallbackFilter?.predict((accSign * getAccelerationAlongTrack()).toDouble(), rawDtSec)
                             fallbackFilter?.update(
                                 positionM = getDisplayedPosition().toDouble(),
-                                speedMps = filteredMeasuredSpeed.toDouble() / 3.6
+                                speedMps = smoothedGpsSpeed.toDouble() / 3.6
                             )
 
                             val timeStamp = SimpleDateFormat(
@@ -440,7 +412,6 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
                 if (isGPSReady) {
                     lastVelocity = _speed.value
                 }
-                fallbackStartedAtNs = null
             }
         }
     }
@@ -497,6 +468,11 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
         totalData = 0
         _dataNumber.value = 0
 
+        _speed.value = 0f
+        _position.value = 0f
+        _absCenterPos.value = 0f
+        _trackMovementTime.value = 0.0
+
 
         isSystemReady = false
         isGPSReady = true
@@ -513,18 +489,31 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
         filteredAccY = 0f
         filteredAccZ = 0f
 
-        lastSmoothedGpsSpeed = 0f
+        rotationVectorValues = null
+        lastTrackBearingDeg = null
+
+        accOffsetX = 0f
+        accOffsetY = 0f
+        accOffsetZ = 0f
+        accOffsetSampleCount = 0
+        accOffsetSumX = 0f
+        accOffsetSumY = 0f
+        accOffsetSumZ = 0f
+        accOffsetsReady = false
+
+        fallbackStartedAtNs = null
+        lastGpsElapsedRealtimeNs = 0L
+
+        lastDisplayedGpsSpeedKmh = 0f
         gpsReacquireBlendCounter = 0
         lastFallbackSpeedBeforeGpsReturn = 0f
 
-        pendingZeroAfterCalibration = false
-        fallbackStartedAtNs = null
-        lastLightSmoothedMeasuredSpeed = 0f
 
         rejectedByDt = 0
         rejectedBySpeed = 0
+        rejectedBySpeedDiff = 0
         rejectedByAcceleration = 0
-        recentMeasuredSpeeds.clear()
+
 
         isFirstAccData = true
         currentAccTime = 0L
@@ -540,7 +529,12 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
 
         val linearAccSensor = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)
         if (linearAccSensor != null) {
-            sensorManager.registerListener(this, linearAccSensor, SensorManager.SENSOR_DELAY_UI)
+            sensorManager.registerListener(this, linearAccSensor, SensorManager.SENSOR_DELAY_GAME)
+        }
+
+        val rotationSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+        if (rotationSensor != null) {
+            sensorManager.registerListener(this, rotationSensor, SensorManager.SENSOR_DELAY_GAME)
         }
 
         val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
@@ -557,11 +551,11 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
         csvWriter?.write("Timestamp,Latitude,Longitude,Altitude,X Acceleration(m/s²),Y Acceleration(m/s²),Z Acceleration(m/s²),Position(m),Speed(km/h)")
         csvWriter?.newLine()
 
-        val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 50)
-            .setMinUpdateIntervalMillis(50)
-            .setWaitForAccurateLocation(true)
-            .setMaxUpdateAgeMillis(50)
-            .setIntervalMillis(50)
+        val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 250L)
+            .setMinUpdateIntervalMillis(100L)
+            .setWaitForAccurateLocation(false)
+            .setMaxUpdateAgeMillis(500L)
+            .setMinUpdateDistanceMeters(0f)
             .setGranularity(Granularity.GRANULARITY_FINE)
             .build()
 
@@ -677,20 +671,57 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
     }
 
     override fun onSensorChanged(event: SensorEvent?) {
-        if (event?.sensor?.type != Sensor.TYPE_LINEAR_ACCELERATION) return
+        if (event == null) return
+
+        when (event.sensor.type) {
+            Sensor.TYPE_ROTATION_VECTOR -> {
+                rotationVectorValues = event.values.clone()
+                return
+            }
+            Sensor.TYPE_LINEAR_ACCELERATION -> {
+            }
+            else -> return
+        }
 
         refreshMovementDurationNow()
         currentAccTime = event.timestamp
 
         // Hafif EMA low-pass
-        val alpha = 0.18f
-        filteredAccX = alpha * event.values[0] + (1f - alpha) * filteredAccX
-        filteredAccY = alpha * event.values[1] + (1f - alpha) * filteredAccY
-        filteredAccZ = alpha * event.values[2] + (1f - alpha) * filteredAccZ
+        val rawX = event.values[0]
+        val rawY = event.values[1]
+        val rawZ = event.values[2]
 
-        currentLinearAcc[0] = if (abs(filteredAccX) < 0.03f) 0f else filteredAccX
-        currentLinearAcc[1] = if (abs(filteredAccY) < 0.03f) 0f else filteredAccY
-        currentLinearAcc[2] = if (abs(filteredAccZ) < 0.03f) 0f else filteredAccZ
+        if (!accOffsetsReady && totalData < calibrationDataCount) {
+            val rawNorm = sqrt(rawX * rawX + rawY * rawY + rawZ * rawZ)
+            if (rawNorm < 0.15f) {
+                accOffsetSumX += rawX
+                accOffsetSumY += rawY
+                accOffsetSumZ += rawZ
+                accOffsetSampleCount++
+            }
+
+            if (accOffsetSampleCount >= 40) {
+                accOffsetX = accOffsetSumX / accOffsetSampleCount
+                accOffsetY = accOffsetSumY / accOffsetSampleCount
+                accOffsetZ = accOffsetSumZ / accOffsetSampleCount
+                accOffsetsReady = true
+
+                Log.d("ACC_CAL", "Offsets ready: x=$accOffsetX y=$accOffsetY z=$accOffsetZ")
+            }
+        }
+
+        val calibratedX = rawX - accOffsetX
+        val calibratedY = rawY - accOffsetY
+        val calibratedZ = rawZ - accOffsetZ
+
+        val alpha = 0.78f
+        filteredAccX = alpha * calibratedX + (1f - alpha) * filteredAccX
+        filteredAccY = alpha * calibratedY + (1f - alpha) * filteredAccY
+        filteredAccZ = alpha * calibratedZ + (1f - alpha) * filteredAccZ
+
+        currentLinearAcc[0] = if (abs(filteredAccX) < 0.005f) 0f else filteredAccX
+        currentLinearAcc[1] = if (abs(filteredAccY) < 0.005f) 0f else filteredAccY
+        currentLinearAcc[2] = if (abs(filteredAccZ) < 0.005f) 0f else filteredAccZ
 
         lastAccX = currentLinearAcc[0]
         lastAccY = currentLinearAcc[1]
@@ -707,15 +738,18 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
             return
         }
 
-        val currentTime = System.currentTimeMillis()
-        val timeDiffLastLocat = (currentTime - lastLocation!!.time) / 1000.0
+        val timeDiffLastLocat = if (lastGpsElapsedRealtimeNs > 0L) {
+            (currentAccTime - lastGpsElapsedRealtimeNs) / 1_000_000_000.0
+        } else {
+            0.0
+        }
         dt = (currentAccTime - lastAccTime) / 1_000_000_000.0
 
         if (dt <= accSamplingTime) {
             return
         }
 
-        val dominantAccSigned = (accSign * getDominantAccelerationAxisValue()).toDouble()
+        val alongTrackAccSigned = (accSign * getAccelerationAlongTrack()).toDouble()
         val axSigned = (accSign * lastAccX).toDouble()
         val aySigned = (accSign * lastAccY).toDouble()
         val azSigned = (accSign * currentLinearAcc[2]).toDouble()
@@ -727,14 +761,15 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
 
             val fallbackElapsedNs = currentAccTime - (fallbackStartedAtNs ?: currentAccTime)
 
-            // GPS'ten ivmeye geçince ilk 0.5 saniye ivmeyi kullanma
-            if (fallbackElapsedNs < 500_000_000L) {
+            // GPS'ten ivmeye geçince çok kısa bir stabilizasyon
+            if (fallbackElapsedNs < 150_000_000L) {
                 lastLinearAcc = currentLinearAcc.copyOf()
                 lastAccTime = currentAccTime
                 return
             }
 
-            fallbackFilter?.predict(dominantAccSigned, dt)
+            val boostedAcc = (alongTrackAccSigned * 1.35).coerceIn(-2.0, 2.0)
+            fallbackFilter?.predict(boostedAcc, dt)
             lastFallbackSpeedBeforeGpsReturn = _speed.value
             val predictedSpeedKmh = fallbackFilter?.getSpeedKmh()?.coerceAtLeast(0f) ?: _speed.value
             val predictedPositionM = fallbackFilter?.getPositionM()?.toFloat()?.coerceAtLeast(_position.value) ?: _position.value
@@ -821,41 +856,80 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
         )
     }
 
-    private fun pushAndMedianLikeSmooth(speed: Float): Float {
-        val out = if (lastLightSmoothedMeasuredSpeed == 0f) {
-            speed
-        } else {
-            (lastLightSmoothedMeasuredSpeed + speed) / 2f
+    private fun adaptiveGpsSpeedFilter(
+        rawSpeedKmh: Float,
+        dtSec: Double
+    ): Float {
+        val safeRaw = rawSpeedKmh.coerceIn(0f, maxReasonableSpeedKmh)
+
+        if (lastDisplayedGpsSpeedKmh <= 0f) {
+            lastDisplayedGpsSpeedKmh = safeRaw
+            return lastDisplayedGpsSpeedKmh
         }
 
-        lastLightSmoothedMeasuredSpeed = speed
-        return out
-    }
+        val prev = lastDisplayedGpsSpeedKmh
 
-    private fun smoothGpsSpeed(rawSpeed: Float): Float {
-        val diff = abs(rawSpeed - lastSmoothedGpsSpeed)
+        val maxUp = prev + (maxPositiveGpsAccMps2 * dtSec.toFloat() * 3.6f) + gpsSpeedMarginKmh
+        val maxDown = prev - (maxNegativeGpsAccMps2 * dtSec.toFloat() * 3.6f) - gpsSpeedMarginKmh
+
+        val clamped = safeRaw.coerceIn(
+            maxDown.coerceAtLeast(0f),
+            maxUp.coerceAtLeast(0f)
+        )
+
+        val diff = clamped - prev
 
         val alpha = when {
-            lastSmoothedGpsSpeed == 0f -> 1.0f
-            diff > 10f -> 0.95f
-            diff > 5f -> 0.85f
-            else -> 0.70f
+            diff < -8f -> 0.92f
+            diff < -3f -> 0.82f
+            diff > 8f -> 0.78f
+            diff > 3f -> 0.65f
+            else -> 0.35f
         }
 
-        val out = alpha * rawSpeed + (1f - alpha) * lastSmoothedGpsSpeed
-        lastSmoothedGpsSpeed = out.coerceAtLeast(0f)
-        return lastSmoothedGpsSpeed
+        val out = prev + alpha * (clamped - prev)
+        lastDisplayedGpsSpeedKmh = out.coerceAtLeast(0f)
+        return lastDisplayedGpsSpeedKmh
     }
 
     private fun smoothFallbackSpeed(rawSpeed: Float): Float {
-        val diff = abs(rawSpeed - _speed.value)
-        val alpha = if (diff > 8f) 0.75f else 0.45f
-        val out = alpha * rawSpeed + (1f - alpha) * _speed.value
-        return out.coerceAtLeast(0f)
+        val prev = _speed.value
+        val diff = rawSpeed - prev
+
+        val alpha = when {
+            diff < -6f -> 0.95f
+            diff > 6f -> 0.92f
+            else -> 0.82f
+        }
+
+        return (prev + alpha * diff).coerceAtLeast(0f)
     }
 
     private fun cloneLocation(location: Location): Location {
         return Location(location)
+    }
+
+    private fun getAccelerationAlongTrack(): Float {
+        val rv = rotationVectorValues ?: return 0f
+        val bearingDeg = lastTrackBearingDeg ?: return 0f
+
+        SensorManager.getRotationMatrixFromVector(rotationMatrix, rv)
+
+        val ax = currentLinearAcc[0]
+        val ay = currentLinearAcc[1]
+        val az = currentLinearAcc[2]
+
+        // device -> world
+        val worldX = rotationMatrix[0] * ax + rotationMatrix[1] * ay + rotationMatrix[2] * az
+        val worldY = rotationMatrix[3] * ax + rotationMatrix[4] * ay + rotationMatrix[5] * az
+        val worldZ = rotationMatrix[6] * ax + rotationMatrix[7] * ay + rotationMatrix[8] * az
+
+        val br = Math.toRadians(bearingDeg.toDouble())
+        val headingEast = kotlin.math.sin(br).toFloat()
+        val headingNorth = kotlin.math.cos(br).toFloat()
+
+        val alongTrack = worldX * headingEast + worldY * headingNorth
+        return if (abs(alongTrack) < 0.01f) 0f else alongTrack
     }
 }
 
