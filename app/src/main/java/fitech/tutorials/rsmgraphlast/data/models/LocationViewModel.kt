@@ -80,6 +80,17 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
     private var lastAccX: Float = 0f
     private var lastAccY: Float = 0f
 
+    // --- Learned forward axis (device-frame horizontal direction of motion) ---
+    private var forwardAxisX: Float = 0f
+    private var forwardAxisY: Float = 0f
+    private var forwardAxisReady: Boolean = false
+    private var faSumXX: Double = 0.0
+    private var faSumYY: Double = 0.0
+    private var faSumXY: Double = 0.0
+    private var faSumXa: Double = 0.0
+    private var faSumYa: Double = 0.0
+    private var faSampleCount: Int = 0
+
     private var rotationVectorValues: FloatArray? = null
     private val rotationMatrix = FloatArray(9)
 
@@ -107,7 +118,7 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
     private var lastAcceptedMeasuredSpeedKmh: Float? = null
 
     private val calibrationDataCount = homeViewModel.allConfigParams.value.calibrationDataNumber
-    private val accSamplingTime = homeViewModel.allConfigParams.value.accSamplingTime
+    private val accSamplingTime =  0.02 //homeViewModel.allConfigParams.value.accSamplingTime Bunu düzelt unutma!
     private val gpsNoDataTime = homeViewModel.allConfigParams.value.gpsNoDataTime
 
     // GPS filtre parametreleri: reject yerine clamp + hafif adaptive smoothing
@@ -341,18 +352,48 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
                             val nowMs = currentConvertedLocation.time
 
                             // 1 kerelik ivme yön kalibrasyonu
-                            if (!accSignCalibrated) {
+                            // Sürekli forward-axis öğrenme (device-frame horizontal yön)
+                            // (Eski "1 kerelik accSign kalibrasyonu" bunun içine gömüldü)
+                            run {
                                 val prevV = (lastVelocity ?: 0f) / 3.6
                                 val prevT = acceptedPrevLocation.time
                                 val dtS = (nowMs - prevT) / 1000.0
 
-                                if (dtS > 0.15 && dtS < 2.0) {
+                                if (dtS > 0.2 && dtS < 2.5) {
                                     val gpsAccMps2 = (gpsSpeedMps - prevV) / dtS
-                                    val alongTrackAcc = getAccelerationAlongTrack().toDouble()
-                                    if (abs(gpsAccMps2) > 0.01 && abs(alongTrackAcc) > 0.01) {
-                                        accSign = if (gpsAccMps2 * alongTrackAcc >= 0) 1f else -1f
-                                        accSignCalibrated = true
-                                        Log.d("ACC_SIGN", "Calibrated accSign=$accSign (gpsAcc=$gpsAccMps2, alongTrackAcc=$alongTrackAcc)")
+                                    if (abs(gpsAccMps2) < 3.0) {
+                                        val ax = lastAccX.toDouble()
+                                        val ay = lastAccY.toDouble()
+                                        faSumXX += ax * ax
+                                        faSumYY += ay * ay
+                                        faSumXY += ax * ay
+                                        faSumXa += ax * gpsAccMps2
+                                        faSumYa += ay * gpsAccMps2
+                                        faSampleCount++
+
+                                        if (faSampleCount >= 15) {
+                                            val det = faSumXX * faSumYY - faSumXY * faSumXY
+                                            var fx = 0.0
+                                            var fy = 0.0
+                                            if (abs(det) > 1e-6) {
+                                                fx = (faSumYY * faSumXa - faSumXY * faSumYa) / det
+                                                fy = (faSumXX * faSumYa - faSumXY * faSumXa) / det
+                                            } else {
+                                                // Rank-deficient — tek eksen dominant ise 1D regresyon
+                                                if (faSumXX >= faSumYY && faSumXX > 1e-6) {
+                                                    fx = faSumXa / faSumXX
+                                                } else if (faSumYY > 1e-6) {
+                                                    fy = faSumYa / faSumYY
+                                                }
+                                            }
+                                            val norm = sqrt(fx * fx + fy * fy)
+                                            if (norm > 1e-3) {
+                                                forwardAxisX = (fx / norm).toFloat()
+                                                forwardAxisY = (fy / norm).toFloat()
+                                                forwardAxisReady = true
+                                                Log.d("FWD_AXIS", "Learned fx=$forwardAxisX fy=$forwardAxisY (n=$faSampleCount)")
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -488,6 +529,16 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
         filteredAccX = 0f
         filteredAccY = 0f
         filteredAccZ = 0f
+
+        forwardAxisX = 0f
+        forwardAxisY = 0f
+        forwardAxisReady = false
+        faSumXX = 0.0
+        faSumYY = 0.0
+        faSumXY = 0.0
+        faSumXa = 0.0
+        faSumYa = 0.0
+        faSampleCount = 0
 
         rotationVectorValues = null
         lastTrackBearingDeg = null
@@ -719,9 +770,9 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
         filteredAccY = alpha * calibratedY + (1f - alpha) * filteredAccY
         filteredAccZ = alpha * calibratedZ + (1f - alpha) * filteredAccZ
 
-        currentLinearAcc[0] = if (abs(filteredAccX) < 0.005f) 0f else filteredAccX
-        currentLinearAcc[1] = if (abs(filteredAccY) < 0.005f) 0f else filteredAccY
-        currentLinearAcc[2] = if (abs(filteredAccZ) < 0.005f) 0f else filteredAccZ
+        currentLinearAcc[0] = filteredAccX
+        currentLinearAcc[1] = filteredAccY
+        currentLinearAcc[2] = filteredAccZ
 
         lastAccX = currentLinearAcc[0]
         lastAccY = currentLinearAcc[1]
@@ -768,8 +819,8 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
                 return
             }
 
-            val boostedAcc = (alongTrackAccSigned * 1.35).coerceIn(-2.0, 2.0)
-            fallbackFilter?.predict(boostedAcc, dt)
+            val clampedAcc = alongTrackAccSigned.coerceIn(-2.5, 2.5)
+            fallbackFilter?.predict(clampedAcc, dt)
             lastFallbackSpeedBeforeGpsReturn = _speed.value
             val predictedSpeedKmh = fallbackFilter?.getSpeedKmh()?.coerceAtLeast(0f) ?: _speed.value
             val predictedPositionM = fallbackFilter?.getPositionM()?.toFloat()?.coerceAtLeast(_position.value) ?: _position.value
@@ -910,26 +961,11 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
     }
 
     private fun getAccelerationAlongTrack(): Float {
-        val rv = rotationVectorValues ?: return 0f
-        val bearingDeg = lastTrackBearingDeg ?: return 0f
-
-        SensorManager.getRotationMatrixFromVector(rotationMatrix, rv)
-
+        if (!forwardAxisReady) return 0f
         val ax = currentLinearAcc[0]
         val ay = currentLinearAcc[1]
-        val az = currentLinearAcc[2]
-
-        // device -> world
-        val worldX = rotationMatrix[0] * ax + rotationMatrix[1] * ay + rotationMatrix[2] * az
-        val worldY = rotationMatrix[3] * ax + rotationMatrix[4] * ay + rotationMatrix[5] * az
-        val worldZ = rotationMatrix[6] * ax + rotationMatrix[7] * ay + rotationMatrix[8] * az
-
-        val br = Math.toRadians(bearingDeg.toDouble())
-        val headingEast = kotlin.math.sin(br).toFloat()
-        val headingNorth = kotlin.math.cos(br).toFloat()
-
-        val alongTrack = worldX * headingEast + worldY * headingNorth
-        return if (abs(alongTrack) < 0.01f) 0f else alongTrack
+        // Öğrenilmiş forward ekseninin üzerine skaler projeksiyon
+        return ax * forwardAxisX + ay * forwardAxisY
     }
 }
 
