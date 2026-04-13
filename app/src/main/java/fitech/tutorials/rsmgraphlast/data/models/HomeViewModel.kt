@@ -198,9 +198,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             Entry(refPos[i].toFloat(), refSpeed[i].toFloat())
         }
 
-        val mergedBands = _staticCoastingBands.value.toMutableList()
-        mergedBands.addAll(mapCoastingRegionsToBands(out.coastingRegion))
-        _staticCoastingBands.value = mergedBands
+        _staticCoastingBands.value = mapCoastingRegionsToBands(out.coastingRegion)
     }
 
     fun writeTripReferenceToFile(context: Context): File {

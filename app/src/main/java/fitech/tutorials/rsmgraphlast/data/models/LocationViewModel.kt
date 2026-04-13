@@ -58,6 +58,7 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
 
     private var lastProjectedLocation: Location? = null
     private var trackLocationData: List<Location>? = null
+    private var trackPositionData: List<Double>? = null
 
     private var isSystemReady: Boolean = false
     private var sensorManager: SensorManager? = null
@@ -147,6 +148,7 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
     private val logGPSPos = mutableListOf<Double>()
     private val logGPSSpeed = mutableListOf<Double>()
     private var logGPSDataNumber = 0
+    private val logGPSIsAvailable = mutableListOf<Boolean>()
 
     private val logAccTime = mutableListOf<Double>()
     private val logAccX = mutableListOf<Double>()
@@ -166,9 +168,9 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
     val trackMovementTime = _trackMovementTime.asStateFlow()
 
     suspend fun loadTrackFromAssets(context: Context, trackId: Int) {
-        trackLocationData = withContext(Dispatchers.IO) {
-            val selectedTrack = homeViewModel.selectedTrack.value
+        val selectedTrack = homeViewModel.selectedTrack.value
 
+        trackLocationData = withContext(Dispatchers.IO) {
             val latitudes = selectedTrack?.latitude
             val longitudes = selectedTrack?.longitude
             val altitudes = selectedTrack?.altitude
@@ -192,6 +194,13 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
             } else {
                 locationProcessor.loadTrackLocations(context, trackId)
             }
+        }
+
+        // Track'teki position listesini kaydet (hat metre bilgisi)
+        trackPositionData = selectedTrack?.position
+        for (i in 0..2000){
+            Log.d("Track Data", "Lat: ${trackLocationData?.get(i)?.latitude}, Long:${trackLocationData?.get(i)?.longitude}")
+            Log.d("Track Data", "Altitude: ${trackLocationData?.get(i)?.altitude}, Pos:${trackPositionData?.get(i)}")
         }
     }
 
@@ -285,6 +294,19 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
                 currentVelocity = rawSpeedKmh
 
                 totalDistance += distanceMeters
+
+                // Yeni track position lookup sistemi
+                val trackLookupPos = lookupTrackPosition(currentConvertedLocation)
+                if (trackLookupPos != null) {
+                    val dir = homeViewModel.selectedDirection.value ?: "West to East"
+                    val initBerth = homeViewModel.selectedInitialStation.value?.berthingPosition ?: 0f
+                    val trainLen = homeViewModel.selectedTrain.value?.totalLength ?: 0.0
+                    val sign = if (dir == "West to East") 1 else -1
+                    val origin = initBerth + (sign * trainLen / 2.0).toFloat()
+                    // trackLookupPos absolute hat metresi, bunu relative yolculuk mesafesine çevir
+                    totalProjectedDistance = abs(trackLookupPos - origin)
+                }
+
                 lastAcceptedGpsLocation = cloneLocation(currentConvertedLocation)
 
                 var smoothedGpsSpeed = adaptiveGpsSpeedFilter(rawSpeedKmh, rawDtSec)
@@ -322,13 +344,22 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
 
                         isSystemReady = true
                         totalDistance = 0f
+                        totalProjectedDistance = 0f
+                        lastProjectedLocation = null
                         lastAcceptedGpsLocation = cloneLocation(currentConvertedLocation)
                         lastAcceptedMeasuredSpeedKmh = 0f
-                        lastDisplayedGpsSpeedKmh = 0f
+                        // GPS smoothing'i gerçek hıza hemen yakınsın diye
+                        // ilk gerçek GPS hızıyla başlat (0 değil)
+                        val firstRealSpeed = if (currentConvertedLocation.hasSpeed())
+                            (currentConvertedLocation.speed * 3.6f).coerceAtLeast(0f)
+                        else rawSpeedKmh
+                        lastDisplayedGpsSpeedKmh = firstRealSpeed
 
                         _speed.emit(0f)
                         _position.emit(0f)
                         updateAbsCenterFromPosition()
+                        lastAcceptedGpsLocation = cloneLocation(currentConvertedLocation)
+                        lastLocation = cloneLocation(currentConvertedLocation)
 
                         val dir = homeViewModel.selectedDirection.value ?: "West to East"
                         val sign = if (dir == "West to East") 1 else -1
@@ -355,13 +386,15 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
                             // Sürekli forward-axis öğrenme (device-frame horizontal yön)
                             // (Eski "1 kerelik accSign kalibrasyonu" bunun içine gömüldü)
                             run {
-                                val prevV = (lastVelocity ?: 0f) / 3.6
-                                val prevT = acceptedPrevLocation.time
-                                val dtS = (nowMs - prevT) / 1000.0
+                                val prevProviderMps = (lastVelocity ?: smoothedGpsSpeed) / 3.6
+                                val currProviderMps = if (currentConvertedLocation.hasSpeed())
+                                    currentConvertedLocation.speed.toDouble().coerceAtLeast(0.0)
+                                else gpsSpeedMps
+                                val dtS = rawDtSec
 
-                                if (dtS > 0.2 && dtS < 2.5) {
-                                    val gpsAccMps2 = (gpsSpeedMps - prevV) / dtS
-                                    if (abs(gpsAccMps2) < 3.0) {
+                                if (dtS > 0.15 && dtS < 3.0) {
+                                    val gpsAccMps2 = (currProviderMps - prevProviderMps) / dtS
+                                    if (abs(gpsAccMps2) < 4.0) {
                                         val ax = lastAccX.toDouble()
                                         val ay = lastAccY.toDouble()
                                         faSumXX += ax * ax
@@ -405,7 +438,7 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
                             updateAbsCenterFromPosition()
 
                             // Fallback filtresini sıcak tut
-                            fallbackFilter?.predict((accSign * getAccelerationAlongTrack()).toDouble(), rawDtSec)
+                            fallbackFilter?.predict(getAccelerationAlongTrack().toDouble(), rawDtSec)
                             fallbackFilter?.update(
                                 positionM = getDisplayedPosition().toDouble(),
                                 speedMps = smoothedGpsSpeed.toDouble() / 3.6
@@ -436,6 +469,7 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
                             logGPSLat.add(currentConvertedLocation.latitude)
                             logGPSLon.add(currentConvertedLocation.longitude)
                             logGPSTime.add(_trackMovementTime.value)
+                            logGPSIsAvailable.add(true)
                             logGPSDataNumber++
                         }
 
@@ -463,6 +497,30 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
         val traveled = _position.value.toDouble()
         val abs = if (dir == "West to East") origin + traveled else origin - traveled
         _absCenterPos.emit(abs.toFloat())
+    }
+
+    /**
+     * GPS koordinatını track üzerindeki en yakın noktaya eşleştirip
+     * o noktanın hat metresini döndürür.
+     * trackPositionData yoksa null döner (eski sistem devam eder).
+     */
+    private fun lookupTrackPosition(gpsLocation: Location): Float? {
+        val trackLocs = trackLocationData ?: return null
+        val trackPos = trackPositionData ?: return null
+        if (trackLocs.isEmpty() || trackPos.isEmpty() || trackLocs.size != trackPos.size) return null
+
+        var bestIdx = 0
+        var bestDist = Float.MAX_VALUE
+        for (i in trackLocs.indices) {
+            val d = gpsLocation.distanceTo(trackLocs[i])
+            if (d < bestDist) {
+                bestDist = d
+                bestIdx = i
+            }
+        }
+        // Çok uzaksa (>200m) güvenme
+        if (bestDist > 200f) return null
+        return trackPos[bestIdx].toFloat()
     }
 
     private fun getDisplayedPosition(): Float {
@@ -572,6 +630,9 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
         currentLinearAcc = FloatArray(3)
         lastLinearAcc = FloatArray(3)
 
+        trackPositionData = null
+        logGPSIsAvailable.clear()
+
         this.sensorManager = sensorManager
         appContext = context.applicationContext
         trackStartMs = System.currentTimeMillis()
@@ -640,7 +701,8 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
             longitude = logGPSLon.toList(),
             altitude = logGPSAlt.toList(),
             position = logGPSPos.toList(),
-            speed = logGPSSpeed.toList()
+            speed = logGPSSpeed.toList(),
+            isGpsDataAvailable = logGPSIsAvailable.toList()
         )
 
         val accBody = DasLogsAcc(
@@ -706,6 +768,7 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
         logGPSAlt.clear()
         logGPSPos.clear()
         logGPSSpeed.clear()
+        logGPSIsAvailable.clear()
 
         logAccTime.clear()
         logAccX.clear()
@@ -800,7 +863,7 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
             return
         }
 
-        val alongTrackAccSigned = (accSign * getAccelerationAlongTrack()).toDouble()
+        val alongTrackAccSigned = getAccelerationAlongTrack().toDouble()
         val axSigned = (accSign * lastAccX).toDouble()
         val aySigned = (accSign * lastAccY).toDouble()
         val azSigned = (accSign * currentLinearAcc[2]).toDouble()
@@ -871,6 +934,7 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
             logGPSLat.add(-1.0)
             logGPSLon.add(-1.0)
             logGPSTime.add(_trackMovementTime.value)
+            logGPSIsAvailable.add(false)
             logGPSDataNumber++
         }
 
@@ -939,7 +1003,8 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
         }
 
         val out = prev + alpha * (clamped - prev)
-        lastDisplayedGpsSpeedKmh = out.coerceAtLeast(0f)
+        val stopped = if (out < 3.5f && safeRaw < 5f) 0f else out
+        lastDisplayedGpsSpeedKmh = stopped.coerceAtLeast(0f)
         return lastDisplayedGpsSpeedKmh
     }
 

@@ -14,7 +14,8 @@ data class Track(
     val stationsInverted: List<Station>,
     val latitude: List<Double>? = null,
     val longitude: List<Double>? = null,
-    val altitude: List<Double>? = null
+    val altitude: List<Double>? = null,
+    val position: List<Double>? = null
 )
 
 data class SpeedLimits(

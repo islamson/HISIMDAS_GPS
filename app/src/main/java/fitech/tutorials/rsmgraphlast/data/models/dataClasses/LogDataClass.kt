@@ -1,14 +1,15 @@
 package fitech.tutorials.rsmgraphlast.data.models.dataClasses
 
 data class DasLogsGps(
-    val createdAt: String,   // ISO-8601, örn: Instant.now().toString()
+    val createdAt: String,
     val dataNumber: Int,
     val time: List<Double>,
     val latitude: List<Double>,
     val longitude: List<Double>,
     val altitude: List<Double>,
     val position: List<Double>,
-    val speed: List<Double>
+    val speed: List<Double>,
+    val isGpsDataAvailable: List<Boolean>
 )
 
 data class DasLogsAcc(

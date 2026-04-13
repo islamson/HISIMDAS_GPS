@@ -503,6 +503,7 @@ fun MainScreen(locationViewModel: LocationViewModel, homeViewModel: HomeViewMode
 
                 onPrev = {
                     homeViewModel.goPrevSegment()
+                    homeViewModel.resetTripReferences()
                     homeViewModel.calculateSpeedLimits()
                     homeViewModel.fetchAllOutProfileOnce()
 
@@ -516,6 +517,7 @@ fun MainScreen(locationViewModel: LocationViewModel, homeViewModel: HomeViewMode
                 },
                 onNext = {
                     homeViewModel.goNextSegment()
+                    homeViewModel.resetTripReferences()
                     homeViewModel.calculateSpeedLimits()
                     homeViewModel.fetchAllOutProfileOnce()
 
