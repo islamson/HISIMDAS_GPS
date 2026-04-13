@@ -58,7 +58,10 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
 
     private var lastProjectedLocation: Location? = null
     private var trackLocationData: List<Location>? = null
+
     private var trackPositionData: List<Double>? = null
+    private var lastTrackSearchIdx: Int = 0
+    private var initialTrackAbsPos: Float? = null
 
     private var isSystemReady: Boolean = false
     private var sensorManager: SensorManager? = null
@@ -295,16 +298,23 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
 
                 totalDistance += distanceMeters
 
-                // Yeni track position lookup sistemi
-                val trackLookupPos = lookupTrackPosition(currentConvertedLocation)
-                if (trackLookupPos != null) {
-                    val dir = homeViewModel.selectedDirection.value ?: "West to East"
-                    val initBerth = homeViewModel.selectedInitialStation.value?.berthingPosition ?: 0f
-                    val trainLen = homeViewModel.selectedTrain.value?.totalLength ?: 0.0
-                    val sign = if (dir == "West to East") 1 else -1
-                    val origin = initBerth + (sign * trainLen / 2.0).toFloat()
-                    // trackLookupPos absolute hat metresi, bunu relative yolculuk mesafesine çevir
-                    totalProjectedDistance = abs(trackLookupPos - origin)
+                // Track position lookup (izdüşüm)
+                val initAbsPos = initialTrackAbsPos
+                if (initAbsPos != null) {
+                    val trackLookupPos = lookupTrackPosition(currentConvertedLocation)
+                    if (trackLookupPos != null) {
+                        val dir = homeViewModel.selectedDirection.value ?: "West to East"
+                        val newProjected = if (dir == "West to East") {
+                            (trackLookupPos - initAbsPos).coerceAtLeast(0f)
+                        } else {
+                            (initAbsPos - trackLookupPos).coerceAtLeast(0f)
+                        }
+                        // Monoton artan: sadece ileri gitsin
+                        if (newProjected >= totalProjectedDistance) {
+                            totalProjectedDistance = newProjected
+                        }
+                        Log.d("TRACK_POS", "lookup=${trackLookupPos} init=$initAbsPos projected=$totalProjectedDistance idx=$lastTrackSearchIdx")
+                    }
                 }
 
                 lastAcceptedGpsLocation = cloneLocation(currentConvertedLocation)
@@ -346,6 +356,25 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
                         totalDistance = 0f
                         totalProjectedDistance = 0f
                         lastProjectedLocation = null
+
+                        // Track lookup: başlangıç noktasını tam aramayla belirle
+                        run {
+                            val tLocs = trackLocationData
+                            val tPos = trackPositionData
+                            if (tLocs != null && tPos != null && tLocs.size == tPos.size && tLocs.isNotEmpty()) {
+                                var bestI = 0
+                                var bestD = Float.MAX_VALUE
+                                for (i in tLocs.indices) {
+                                    val d = currentConvertedLocation.distanceTo(tLocs[i])
+                                    if (d < bestD) { bestD = d; bestI = i }
+                                }
+                                if (bestD < 200f) {
+                                    initialTrackAbsPos = tPos[bestI].toFloat()
+                                    lastTrackSearchIdx = bestI
+                                    Log.d("TRACK_POS", "Initial track pos: ${tPos[bestI]} at index $bestI (dist=${bestD}m)")
+                                }
+                            }
+                        }
                         lastAcceptedGpsLocation = cloneLocation(currentConvertedLocation)
                         lastAcceptedMeasuredSpeedKmh = 0f
                         // GPS smoothing'i gerçek hıza hemen yakınsın diye
@@ -501,25 +530,45 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
 
     /**
      * GPS koordinatını track üzerindeki en yakın noktaya eşleştirip
-     * o noktanın hat metresini döndürür.
-     * trackPositionData yoksa null döner (eski sistem devam eder).
+     * o noktanın hat metresini (absolute position) döndürür.
+     * Yön bilgisine göre sadece ileri yönde ve sınırlı pencerede arar.
+     * trackPositionData yoksa null döner.
      */
     private fun lookupTrackPosition(gpsLocation: Location): Float? {
         val trackLocs = trackLocationData ?: return null
         val trackPos = trackPositionData ?: return null
         if (trackLocs.isEmpty() || trackPos.isEmpty() || trackLocs.size != trackPos.size) return null
 
-        var bestIdx = 0
+        val dir = homeViewModel.selectedDirection.value ?: "West to East"
+        val isW2E = dir == "West to East"
+
+        // Arama penceresi: son bulunan indexten itibaren 1000 ileri
+        val startIdx: Int
+        val endIdx: Int
+
+        if (isW2E) {
+            startIdx = (lastTrackSearchIdx - 10).coerceAtLeast(0)
+            endIdx = (lastTrackSearchIdx + 1000).coerceAtMost(trackLocs.size - 1)
+        } else {
+            startIdx = (lastTrackSearchIdx - 1000).coerceAtLeast(0)
+            endIdx = (lastTrackSearchIdx + 10).coerceAtMost(trackLocs.size - 1)
+        }
+
+        var bestIdx = lastTrackSearchIdx
         var bestDist = Float.MAX_VALUE
-        for (i in trackLocs.indices) {
+
+        for (i in startIdx..endIdx) {
             val d = gpsLocation.distanceTo(trackLocs[i])
             if (d < bestDist) {
                 bestDist = d
                 bestIdx = i
             }
         }
+
         // Çok uzaksa (>200m) güvenme
         if (bestDist > 200f) return null
+
+        lastTrackSearchIdx = bestIdx
         return trackPos[bestIdx].toFloat()
     }
 
@@ -631,6 +680,8 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
         lastLinearAcc = FloatArray(3)
 
         trackPositionData = null
+        lastTrackSearchIdx = 0
+        initialTrackAbsPos = null
         logGPSIsAvailable.clear()
 
         this.sensorManager = sensorManager
