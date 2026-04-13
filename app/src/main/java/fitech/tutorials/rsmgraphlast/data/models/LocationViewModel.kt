@@ -201,9 +201,10 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
 
         // Track'teki position listesini kaydet (hat metre bilgisi)
         trackPositionData = selectedTrack?.position
-        for (i in 0..2000){
-            Log.d("Track Data", "Lat: ${trackLocationData?.get(i)?.latitude}, Long:${trackLocationData?.get(i)?.longitude}")
-            Log.d("Track Data", "Altitude: ${trackLocationData?.get(i)?.altitude}, Pos:${trackPositionData?.get(i)}")
+
+        Log.d("TRACK_LOAD", "trackLocationData size=${trackLocationData?.size}, trackPositionData size=${trackPositionData?.size}, trackPositionData null=${trackPositionData == null}")
+        if (trackPositionData != null && trackPositionData!!.isNotEmpty()) {
+            Log.d("TRACK_LOAD", "First pos=${trackPositionData!![0]}, Last pos=${trackPositionData!!.last()}")
         }
     }
 
@@ -359,8 +360,10 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
 
                         // Track lookup: başlangıç noktasını tam aramayla belirle
                         run {
+                            Log.d("TRACK_POS", "=== INIT SEARCH START === gpsLat=${currentConvertedLocation.latitude} gpsLon=${currentConvertedLocation.longitude}")
                             val tLocs = trackLocationData
                             val tPos = trackPositionData
+                            Log.d("TRACK_POS", "tLocs null=${tLocs==null} tPos null=${tPos==null} tLocsSize=${tLocs?.size} tPosSize=${tPos?.size}")
                             if (tLocs != null && tPos != null && tLocs.size == tPos.size && tLocs.isNotEmpty()) {
                                 var bestI = 0
                                 var bestD = Float.MAX_VALUE
@@ -368,11 +371,16 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
                                     val d = currentConvertedLocation.distanceTo(tLocs[i])
                                     if (d < bestD) { bestD = d; bestI = i }
                                 }
+                                Log.d("TRACK_POS", "Full search done: bestI=$bestI bestD=$bestD bestPos=${tPos[bestI]}")
                                 if (bestD < 200f) {
                                     initialTrackAbsPos = tPos[bestI].toFloat()
                                     lastTrackSearchIdx = bestI
                                     Log.d("TRACK_POS", "Initial track pos: ${tPos[bestI]} at index $bestI (dist=${bestD}m)")
+                                } else {
+
                                 }
+                            } else {
+                                Log.d("TRACK_POS", "CONDITION FAILED - skipping search")
                             }
                         }
                         lastAcceptedGpsLocation = cloneLocation(currentConvertedLocation)
@@ -679,7 +687,6 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
         currentLinearAcc = FloatArray(3)
         lastLinearAcc = FloatArray(3)
 
-        trackPositionData = null
         lastTrackSearchIdx = 0
         initialTrackAbsPos = null
         logGPSIsAvailable.clear()
