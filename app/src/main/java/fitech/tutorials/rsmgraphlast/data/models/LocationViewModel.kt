@@ -1,6 +1,7 @@
 package fitech.tutorials.rsmgraphlast.data.models
 
 import android.annotation.SuppressLint
+import android.content.ContentValues
 import android.content.Context
 import android.hardware.Sensor
 import android.hardware.SensorEvent
@@ -8,6 +9,7 @@ import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.location.Location
 import android.os.Environment
+import android.provider.MediaStore
 import android.util.Log
 import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.ViewModel
@@ -32,6 +34,7 @@ import kotlinx.coroutines.withContext
 import java.io.BufferedWriter
 import java.io.File
 import java.io.FileWriter
+import java.io.OutputStreamWriter
 import java.text.SimpleDateFormat
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
@@ -750,14 +753,28 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
         val timeStamp = sdf.format(Date())
         val fileName = "TrackingLog_$timeStamp.csv"
 
-        val documentsDir =
-            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS)
-        if (!documentsDir.exists()) {
-            documentsDir.mkdirs()
+        val contentValues = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+            put(MediaStore.MediaColumns.MIME_TYPE, "text/csv")
+            put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOCUMENTS)
         }
 
-        csvFile = File(documentsDir, fileName)
-        csvWriter = BufferedWriter(FileWriter(csvFile!!))
+        val uri = appContext.contentResolver.insert(
+            MediaStore.Files.getContentUri("external"),
+            contentValues
+        )
+
+        if (uri != null) {
+            val outputStream = appContext.contentResolver.openOutputStream(uri)
+            if (outputStream != null) {
+                csvWriter = BufferedWriter(OutputStreamWriter(outputStream))
+                Log.d("CSV", "Dosya oluşturuldu: $fileName → Documents/")
+            } else {
+                Log.e("CSV", "OutputStream null geldi")
+            }
+        } else {
+            Log.e("CSV", "MediaStore URI oluşturulamadı")
+        }
         csvWriter?.write("Timestamp,Mode,Latitude,Longitude,Altitude,X Acceleration(m/s²),Y Acceleration(m/s²),Z Acceleration(m/s²),AlongTrackAcc,ClampedAcc,FwdAxisX,FwdAxisY,FaSampleCount,KalmanSpeedKmh,DisplayedSpeedKmh,FallbackElapsedMs,Position(m),GpsRawSpeed")
         csvWriter?.newLine()
 
