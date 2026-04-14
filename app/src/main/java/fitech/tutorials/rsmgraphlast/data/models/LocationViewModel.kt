@@ -38,6 +38,7 @@ import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.util.Date
 import java.util.Locale
+import java.util.TimeZone
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 import kotlin.math.abs
@@ -510,20 +511,28 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
                                 speedMps = smoothedGpsSpeed.toDouble() / 3.6
                             )
 
-                            val timeStamp = SimpleDateFormat(
-                                "yyyy-MM-dd'T'HH:mm:ss",
-                                Locale.getDefault()
-                            ).format(Date())
+                            val sdf2 = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.getDefault())
+                            sdf2.timeZone = TimeZone.getDefault()
+                            val timeStamp = sdf2.format(Date())
 
                             csvWriter?.apply {
+                                val currentAlongTrack = (accSign * getAccelerationAlongTrack()).toDouble()
                                 write(
-                                    "$timeStamp," +
+                                    "$timeStamp,GPS," +
                                             "${currentConvertedLocation.latitude}," +
                                             "${currentConvertedLocation.longitude}," +
                                             "${currentConvertedLocation.altitude}," +
                                             "${"-"},${"-"},${"-"}," +
+                                            "${"%.4f".format(currentAlongTrack)}," +   // AlongTrackAcc
+                                            "${"-"}," +                                  // ClampedAcc (GPS modunda yok)
+                                            "${"%.4f".format(forwardAxisX)}," +
+                                            "${"%.4f".format(forwardAxisY)}," +
+                                            "$faSampleCount," +
+                                            "${"-"}," +                                  // KalmanSpeedKmh
+                                            "${_speed.value.toInt()}," +
+                                            "${"-"}," +                                  // FallbackElapsedMs
                                             "${_position.value.toInt()}," +
-                                            "${_speed.value.toInt()}"
+                                            "%.2f".format(smoothedGpsSpeed)        // GpsRawSpeed → smoothedGpsSpeed
                                 )
                                 newLine()
                                 flush()
@@ -736,7 +745,9 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
             sensorManager.registerListener(this, rotationSensor, SensorManager.SENSOR_DELAY_GAME)
         }
 
-        val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
+        val sdf = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault())
+        sdf.timeZone = TimeZone.getDefault()
+        val timeStamp = sdf.format(Date())
         val fileName = "TrackingLog_$timeStamp.csv"
 
         val documentsDir =
@@ -747,7 +758,7 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
 
         csvFile = File(documentsDir, fileName)
         csvWriter = BufferedWriter(FileWriter(csvFile!!))
-        csvWriter?.write("Timestamp,Latitude,Longitude,Altitude,X Acceleration(m/s²),Y Acceleration(m/s²),Z Acceleration(m/s²),Position(m),Speed(km/h)")
+        csvWriter?.write("Timestamp,Mode,Latitude,Longitude,Altitude,X Acceleration(m/s²),Y Acceleration(m/s²),Z Acceleration(m/s²),AlongTrackAcc,ClampedAcc,FwdAxisX,FwdAxisY,FaSampleCount,KalmanSpeedKmh,DisplayedSpeedKmh,FallbackElapsedMs,Position(m),GpsRawSpeed")
         csvWriter?.newLine()
 
         val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 250L)
@@ -1020,15 +1031,26 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
             gpsCalibrationCounter = 0
 
 
-            val timeStamp = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.getDefault()).format(Date())
+            val sdf2 = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.getDefault())
+            sdf2.timeZone = TimeZone.getDefault()
+            val timeStamp = sdf2.format(Date())
 
             csvWriter?.apply {
+                val fallbackMs = (currentAccTime - (fallbackStartedAtNs ?: currentAccTime)) / 1_000_000L
                 write(
-                    "$timeStamp," +
+                    "$timeStamp,FALLBACK," +
                             "${"-"},${"-"},${"-"}," +
                             "$axSigned,$aySigned,$azSigned," +
+                            "${"%.4f".format(alongTrackAccSigned)}," +   // AlongTrackAcc
+                            "${"%.4f".format(clampedAcc)}," +             // ClampedAcc
+                            "${"%.4f".format(forwardAxisX)}," +
+                            "${"%.4f".format(forwardAxisY)}," +
+                            "$faSampleCount," +
+                            "${"%.2f".format(fallbackFilter?.getSpeedKmh() ?: -1f)}," +  // KalmanSpeedKmh
+                            "${_speed.value.toInt()}," +                  // DisplayedSpeedKmh
+                            "$fallbackMs," +
                             "${_position.value.toInt()}," +
-                            "${_speed.value.toInt()}"
+                            "${"-"}"                                       // GpsRawSpeed yok
                 )
                 newLine()
                 flush()
