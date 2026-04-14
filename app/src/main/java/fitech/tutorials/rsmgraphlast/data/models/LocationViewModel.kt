@@ -969,8 +969,28 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
                 return
             }
 
+            // Stop detection: titreşim enerjisi düşükse araç durmuştur
+            val accNorm = sqrt(
+                currentLinearAcc[0] * currentLinearAcc[0] +
+                        currentLinearAcc[1] * currentLinearAcc[1] +
+                        currentLinearAcc[2] * currentLinearAcc[2]
+            ).toDouble()
+            val isLikelyStopped = accNorm < 0.15 && (fallbackFilter?.getSpeedKmh() ?: 0f) < 5f
+
+            if (isLikelyStopped) {
+                fallbackFilter?.zupt()
+                lastFallbackSpeedBeforeGpsReturn = 0f
+                viewModelScope.launch {
+                    _speed.emit(0f)
+                }
+                lastLinearAcc = currentLinearAcc.copyOf()
+                lastAccTime = currentAccTime
+                return
+            }
+
             val clampedAcc = alongTrackAccSigned.coerceIn(-2.5, 2.5)
             fallbackFilter?.predict(clampedAcc, dt)
+            Log.d("FALLBACK", "acc=${"%.3f".format(clampedAcc)} bias=${"%.4f".format(fallbackFilter?.getBias())} speed=${"%.1f".format(fallbackFilter?.getSpeedKmh())} dt=${"%.3f".format(dt)}")
             lastFallbackSpeedBeforeGpsReturn = _speed.value
             val predictedSpeedKmh = fallbackFilter?.getSpeedKmh()?.coerceAtLeast(0f) ?: _speed.value
             val predictedPositionM = fallbackFilter?.getPositionM()?.toFloat()?.coerceAtLeast(_position.value) ?: _position.value
@@ -1100,9 +1120,9 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
         val diff = rawSpeed - prev
 
         val alpha = when {
-            diff < -6f -> 0.95f
-            diff > 6f -> 0.92f
-            else -> 0.82f
+            diff < -10f -> 0.85f
+            diff > 10f -> 0.80f
+            else -> 0.55f
         }
 
         return (prev + alpha * diff).coerceAtLeast(0f)
@@ -1126,93 +1146,116 @@ private class TrackFallbackFilter(
     private val positionStd: Double,
     private val speedStd: Double
 ) {
+    // State: [position, speed, accelBias]
     private var positionM = 0.0
     private var speedMps = 0.0
+    private var accelBias = 0.0
 
-    // Kovaryans matrisi
-    private var p00 = 10.0
-    private var p01 = 0.0
-    private var p10 = 0.0
-    private var p11 = 10.0
+    // 3x3 covariance
+    private var P = Array(3) { DoubleArray(3) }
 
     fun init(initialPositionM: Double, initialSpeedMps: Double) {
         positionM = initialPositionM
         speedMps = initialSpeedMps
-        p00 = 5.0
-        p01 = 0.0
-        p10 = 0.0
-        p11 = 5.0
+        accelBias = 0.0
+        P[0][0] = 5.0; P[0][1] = 0.0; P[0][2] = 0.0
+        P[1][0] = 0.0; P[1][1] = 5.0; P[1][2] = 0.0
+        P[2][0] = 0.0; P[2][1] = 0.0; P[2][2] = 0.5
     }
 
-    fun predict(accMps2: Double, dtRaw: Double) {
+    fun predict(rawAccMps2: Double, dtRaw: Double) {
         val dt = dtRaw.coerceIn(0.001, 1.0)
 
-        positionM += speedMps * dt + 0.5 * accMps2 * dt * dt
-        speedMps += accMps2 * dt
-        if (speedMps < 0.0) speedMps = 0.0
+        // Bias-corrected acceleration
+        val acc = rawAccMps2 - accelBias
 
+        positionM += speedMps * dt + 0.5 * acc * dt * dt
+        speedMps += acc * dt
+        // accelBias stays (random walk)
+
+        // Covariance prediction
         val q = processAccelStd * processAccelStd
+        val qBias = 0.01 // bias random walk noise
         val dt2 = dt * dt
-        val dt3 = dt2 * dt
-        val dt4 = dt2 * dt2
 
-        val q00 = q * dt4 / 4.0
-        val q01 = q * dt3 / 2.0
-        val q10 = q * dt3 / 2.0
-        val q11 = q * dt2
+        val newP = Array(3) { DoubleArray(3) }
 
-        val newP00 = p00 + dt * (p10 + p01) + dt2 * p11 + q00
-        val newP01 = p01 + dt * p11 + q01
-        val newP10 = p10 + dt * p11 + q10
-        val newP11 = p11 + q11
+        // F = [[1, dt, -0.5*dt^2], [0, 1, -dt], [0, 0, 1]]
+        // Simplified covariance update
+        newP[0][0] = P[0][0] + dt * (P[1][0] + P[0][1]) + dt2 * P[1][1] + q * dt2 * dt2 / 4.0
+        newP[0][1] = P[0][1] + dt * P[1][1] + q * dt2 * dt / 2.0
+        newP[0][2] = P[0][2] + dt * P[1][2] - 0.5 * dt2 * P[2][2]
+        newP[1][0] = P[1][0] + dt * P[1][1] + q * dt2 * dt / 2.0
+        newP[1][1] = P[1][1] + q * dt2
+        newP[1][2] = P[1][2] - dt * P[2][2]
+        newP[2][0] = P[2][0] + dt * P[2][1] - 0.5 * dt2 * P[2][2]
+        newP[2][1] = P[2][1] - dt * P[2][2]
+        newP[2][2] = P[2][2] + qBias * dt
 
-        p00 = newP00
-        p01 = newP01
-        p10 = newP10
-        p11 = newP11
+        for (i in 0..2) for (j in 0..2) P[i][j] = newP[i][j]
     }
 
     fun update(positionM: Double, speedMps: Double) {
-        // H = I olduğu için sade form
+        // H = [[1,0,0],[0,1,0]] — observe position and speed
         val r00 = positionStd * positionStd
         val r11 = speedStd * speedStd
 
-        val s00 = p00 + r00
-        val s01 = p01
-        val s10 = p10
-        val s11 = p11 + r11
+        // Kalman gain for position observation
+        val s0 = P[0][0] + r00
+        if (s0 > 1e-9) {
+            val k0 = P[0][0] / s0
+            val k1 = P[1][0] / s0
+            val k2 = P[2][0] / s0
+            val y0 = positionM - this.positionM
+            this.positionM += k0 * y0
+            this.speedMps += k1 * y0
+            this.accelBias += k2 * y0
+            // Joseph form P update
+            val f = 1.0 - k0
+            P[0][0] = f * P[0][0]; P[0][1] = f * P[0][1]; P[0][2] = f * P[0][2]
+            P[1][0] -= k1 * P[0][0]; P[1][1] -= k1 * P[0][1]; P[1][2] -= k1 * P[0][2]
+            P[2][0] -= k2 * P[0][0]; P[2][1] -= k2 * P[0][1]; P[2][2] -= k2 * P[0][2]
+        }
 
-        val det = s00 * s11 - s01 * s10
-        if (abs(det) < 1e-9) return
+        // Kalman gain for speed observation
+        val s1 = P[1][1] + r11
+        if (s1 > 1e-9) {
+            val k0 = P[0][1] / s1
+            val k1 = P[1][1] / s1
+            val k2 = P[2][1] / s1
+            val y1 = speedMps - this.speedMps
+            this.positionM += k0 * y1
+            this.speedMps += k1 * y1
+            this.accelBias += k2 * y1
+            P[0][0] -= k0 * P[1][0]; P[0][1] -= k0 * P[1][1]; P[0][2] -= k0 * P[1][2]
+            val f = 1.0 - k1
+            P[1][0] = f * P[1][0]; P[1][1] = f * P[1][1]; P[1][2] = f * P[1][2]
+            P[2][0] -= k2 * P[1][0]; P[2][1] -= k2 * P[1][1]; P[2][2] -= k2 * P[1][2]
+        }
 
-        val invS00 = s11 / det
-        val invS01 = -s01 / det
-        val invS10 = -s10 / det
-        val invS11 = s00 / det
-
-        val k00 = p00 * invS00 + p01 * invS10
-        val k01 = p00 * invS01 + p01 * invS11
-        val k10 = p10 * invS00 + p11 * invS10
-        val k11 = p10 * invS01 + p11 * invS11
-
-        val y0 = positionM - this.positionM
-        val y1 = speedMps - this.speedMps
-
-        this.positionM += k00 * y0 + k01 * y1
-        this.speedMps += k10 * y0 + k11 * y1
         if (this.speedMps < 0.0) this.speedMps = 0.0
+    }
 
-        val newP00 = (1.0 - k00) * p00 - k01 * p10
-        val newP01 = (1.0 - k00) * p01 - k01 * p11
-        val newP10 = -k10 * p00 + (1.0 - k11) * p10
-        val newP11 = -k10 * p01 + (1.0 - k11) * p11
-
-        p00 = newP00
-        p01 = newP01
-        p10 = newP10
-        p11 = newP11
+    /** Araç durduğunda çağır — hızı ve bias'ı sıfırla */
+    fun zupt() {
+        val s = P[1][1] + 0.01 // çok küçük measurement noise
+        if (s > 1e-9) {
+            val k0 = P[0][1] / s
+            val k1 = P[1][1] / s
+            val k2 = P[2][1] / s
+            val y = 0.0 - speedMps
+            positionM += k0 * y
+            speedMps += k1 * y
+            accelBias += k2 * y
+            P[0][0] -= k0 * P[1][0]; P[0][1] -= k0 * P[1][1]; P[0][2] -= k0 * P[1][2]
+            val f = 1.0 - k1
+            P[1][0] = f * P[1][0]; P[1][1] = f * P[1][1]; P[1][2] = f * P[1][2]
+            P[2][0] -= k2 * P[1][0]; P[2][1] -= k2 * P[1][1]; P[2][2] -= k2 * P[1][2]
+        }
+        speedMps = 0.0
     }
 
     fun getPositionM(): Double = positionM
     fun getSpeedKmh(): Float = (speedMps * 3.6).toFloat()
+    fun getBias(): Double = accelBias
 }
