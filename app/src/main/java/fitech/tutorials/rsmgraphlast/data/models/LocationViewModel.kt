@@ -247,6 +247,35 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
                     lastFallbackSpeedBeforeGpsReturn = _speed.value
                     gpsReacquireBlendCounter = gpsReacquireBlendSamples
 
+                    // GPS geri geldi — track arama indexini tam aramayla güncelle
+                    val tLocs = trackLocationData
+                    val tPos = trackPositionData
+                    if (tLocs != null && tPos != null && tLocs.size == tPos.size) {
+                        var bestI = 0
+                        var bestD = Float.MAX_VALUE
+                        for (i in tLocs.indices) {
+                            val d = currentConvertedLocation.distanceTo(tLocs[i])
+                            if (d < bestD) { bestD = d; bestI = i }
+                        }
+                        if (bestD < 200f) {
+                            lastTrackSearchIdx = bestI
+                            val newAbsPos = tPos[bestI].toFloat()
+                            val initPos = initialTrackAbsPos
+                            if (initPos != null) {
+                                val dir = homeViewModel.selectedDirection.value ?: "West to East"
+                                val newProjected = if (dir == "West to East") {
+                                    (newAbsPos - initPos).coerceAtLeast(0f)
+                                } else {
+                                    (initPos - newAbsPos).coerceAtLeast(0f)
+                                }
+                                if (newProjected >= totalProjectedDistance) {
+                                    totalProjectedDistance = newProjected
+                                }
+                            }
+                            Log.d("TRACK_POS", "GPS reacquired: full search idx=$bestI pos=${tPos[bestI]} dist=${bestD}m")
+                        }
+                    }
+
                     gpsCalibrationCounter = 1
                     return
                 }
