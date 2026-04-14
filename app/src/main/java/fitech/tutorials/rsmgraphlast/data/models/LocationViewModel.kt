@@ -508,7 +508,7 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
                             updateAbsCenterFromPosition()
 
                             // Fallback filtresini sıcak tut
-                            fallbackFilter?.predict(getAccelerationAlongTrack().toDouble(), rawDtSec)
+                            fallbackFilter?.predict((accSign * getAccelerationAlongTrack()).toDouble(), rawDtSec)
                             fallbackFilter?.update(
                                 positionM = getDisplayedPosition().toDouble(),
                                 speedMps = smoothedGpsSpeed.toDouble() / 3.6
@@ -986,6 +986,11 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
         if (timeDiffLastLocat > gpsNoDataTime) {
             if (fallbackStartedAtNs == null) {
                 fallbackStartedAtNs = currentAccTime
+                // Filter state'ini son bilinen GPS hızıyla sıfırla
+                fallbackFilter?.init(
+                    initialPositionM = getDisplayedPosition().toDouble(),
+                    initialSpeedMps = (lastDisplayedGpsSpeedKmh / 3.6).toDouble()
+                )
             }
 
             val fallbackElapsedNs = currentAccTime - (fallbackStartedAtNs ?: currentAccTime)
@@ -1235,41 +1240,46 @@ private class TrackFallbackFilter(
     }
 
     fun update(positionM: Double, speedMps: Double) {
-        // H = [[1,0,0],[0,1,0]] — observe position and speed
         val r00 = positionStd * positionStd
         val r11 = speedStd * speedStd
 
-        // Kalman gain for position observation
+        // Konum güncellemesi — önce tüm gain'leri hesapla, sonra P'yi güncelle
         val s0 = P[0][0] + r00
         if (s0 > 1e-9) {
             val k0 = P[0][0] / s0
             val k1 = P[1][0] / s0
             val k2 = P[2][0] / s0
-            val y0 = positionM - this.positionM
-            this.positionM += k0 * y0
-            this.speedMps += k1 * y0
-            this.accelBias += k2 * y0
-            // Joseph form P update
-            val f = 1.0 - k0
-            P[0][0] = f * P[0][0]; P[0][1] = f * P[0][1]; P[0][2] = f * P[0][2]
-            P[1][0] -= k1 * P[0][0]; P[1][1] -= k1 * P[0][1]; P[1][2] -= k1 * P[0][2]
-            P[2][0] -= k2 * P[0][0]; P[2][1] -= k2 * P[0][1]; P[2][2] -= k2 * P[0][2]
+            val inn = positionM - this.positionM
+            this.positionM += k0 * inn
+            this.speedMps  += k1 * inn
+            this.accelBias += k2 * inn
+
+            // P güncelle: P_new = (I - K*H)*P — önceki değerleri koru
+            val p00 = P[0][0]; val p01 = P[0][1]; val p02 = P[0][2]
+            val p10 = P[1][0]; val p11 = P[1][1]; val p12 = P[1][2]
+            val p20 = P[2][0]; val p21 = P[2][1]; val p22 = P[2][2]
+            P[0][0] = (1-k0)*p00;  P[0][1] = (1-k0)*p01;  P[0][2] = (1-k0)*p02
+            P[1][0] = p10-k1*p00;  P[1][1] = p11-k1*p01;  P[1][2] = p12-k1*p02
+            P[2][0] = p20-k2*p00;  P[2][1] = p21-k2*p01;  P[2][2] = p22-k2*p02
         }
 
-        // Kalman gain for speed observation
+        // Hız güncellemesi — aynı şekilde önce değerleri kopyala
         val s1 = P[1][1] + r11
         if (s1 > 1e-9) {
             val k0 = P[0][1] / s1
             val k1 = P[1][1] / s1
             val k2 = P[2][1] / s1
-            val y1 = speedMps - this.speedMps
-            this.positionM += k0 * y1
-            this.speedMps += k1 * y1
-            this.accelBias += k2 * y1
-            P[0][0] -= k0 * P[1][0]; P[0][1] -= k0 * P[1][1]; P[0][2] -= k0 * P[1][2]
-            val f = 1.0 - k1
-            P[1][0] = f * P[1][0]; P[1][1] = f * P[1][1]; P[1][2] = f * P[1][2]
-            P[2][0] -= k2 * P[1][0]; P[2][1] -= k2 * P[1][1]; P[2][2] -= k2 * P[1][2]
+            val inn = speedMps - this.speedMps
+            this.positionM += k0 * inn
+            this.speedMps  += k1 * inn
+            this.accelBias += k2 * inn
+
+            val p00 = P[0][0]; val p01 = P[0][1]; val p02 = P[0][2]
+            val p10 = P[1][0]; val p11 = P[1][1]; val p12 = P[1][2]
+            val p20 = P[2][0]; val p21 = P[2][1]; val p22 = P[2][2]
+            P[0][0] = p00-k0*p10;  P[0][1] = p01-k0*p11;  P[0][2] = p02-k0*p12
+            P[1][0] = (1-k1)*p10;  P[1][1] = (1-k1)*p11;  P[1][2] = (1-k1)*p12
+            P[2][0] = p20-k2*p10;  P[2][1] = p21-k2*p11;  P[2][2] = p22-k2*p12
         }
 
         if (this.speedMps < 0.0) this.speedMps = 0.0
