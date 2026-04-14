@@ -539,17 +539,17 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
                                             "${currentConvertedLocation.longitude}," +
                                             "${currentConvertedLocation.altitude}," +
                                             "${"-"},${"-"},${"-"}," +
-                                            "${"%.4f".format(currentAlongTrack)}," +   // AlongTrackAcc
-                                            "${"-"}," +                                  // ClampedAcc (GPS modunda yok)
-                                            "${"%.4f".format(forwardAxisX)}," +
-                                            "${"%.4f".format(forwardAxisY)}," +
+                                            "${String.format(Locale.US, "%.4f", currentAlongTrack)}," +
+                                            "${"-"}," +
+                                            "${String.format(Locale.US, "%.4f", forwardAxisX)}," +
+                                            "${String.format(Locale.US, "%.4f", forwardAxisY)}," +
                                             "$faSampleCount," +
-                                            "${gravInitialized}" +
-                                            "${"-"}," +                                  // KalmanSpeedKmh
+                                            "${gravInitialized}," +
+                                            "${"-"}," +
                                             "${_speed.value.toInt()}," +
-                                            "${"-"}," +                                  // FallbackElapsedMs
+                                            "${"-"}," +
                                             "${_position.value.toInt()}," +
-                                            "%.2f".format(smoothedGpsSpeed)        // GpsRawSpeed → smoothedGpsSpeed
+                                            "${String.format(Locale.US, "%.2f", smoothedGpsSpeed)}"
                                 )
                                 newLine()
                                 flush()
@@ -1051,7 +1051,7 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
 
             // Sliding window: 1.5 saniyelik ortalama — vibrasyon sıfırlanır, yavaş tren ivmesi korunur
             atWindowSum += alongTrackAccSigned
-            atAccWindow.addLast(alongTrackAccSigned)
+            atAccWindow.add(alongTrackAccSigned)
             if (atAccWindow.size > AT_WINDOW_SIZE) {
                 atWindowSum -= atAccWindow.removeFirst()
             }
@@ -1098,17 +1098,17 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
                     "$timeStamp,FALLBACK," +
                             "${"-"},${"-"},${"-"}," +
                             "$axSigned,$aySigned,$azSigned," +
-                            "${"%.4f".format(alongTrackAccSigned)}," +   // AlongTrackAcc
-                            "${"%.4f".format(clampedAcc)}," +             // ClampedAcc
-                            "${"%.4f".format(forwardAxisX)}," +
-                            "${"%.4f".format(forwardAxisY)}," +
+                            "${String.format(Locale.US, "%.4f", alongTrackAccSigned)}," +
+                            "${String.format(Locale.US, "%.4f", clampedAcc)}," +
+                            "${String.format(Locale.US, "%.4f", forwardAxisX)}," +
+                            "${String.format(Locale.US, "%.4f", forwardAxisY)}," +
                             "$faSampleCount," +
-                            "${gravInitialized}" +
-                            "${"%.2f".format(fallbackFilter?.getSpeedKmh() ?: -1f)}," +  // KalmanSpeedKmh
-                            "${_speed.value.toInt()}," +                  // DisplayedSpeedKmh
+                            "${gravInitialized}," +
+                            "${String.format(Locale.US, "%.2f", fallbackFilter?.getSpeedKmh() ?: -1f)}," +
+                            "${_speed.value.toInt()}," +
                             "$fallbackMs," +
                             "${_position.value.toInt()}," +
-                            "${"-"}"                                       // GpsRawSpeed yok
+                            "${"-"}"
                 )
                 newLine()
                 flush()
