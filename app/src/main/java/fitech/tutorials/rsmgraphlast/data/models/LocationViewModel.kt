@@ -112,6 +112,19 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
     private var accOffsetSumZ = 0f
     private var accOffsetsReady = false
 
+    // Ham ivmeölçer (TYPE_ACCELEROMETER) için yerçekimi tahmini
+    private var gravEmaX = 0f
+    private var gravEmaY = 0f
+    private var gravEmaZ = 9.81f
+    private var gravSampleCount = 0
+    private var gravInitialized = false
+    private val GRAV_ALPHA = 0.99967f  // τ ≈ 60s — yavaş drift düzeltme
+
+    // Sliding window / Moving Average Filter for along-track acc (vibrasyon filtresi)
+    private val atAccWindow = ArrayDeque<Double>()
+    private var atWindowSum = 0.0
+    private val AT_WINDOW_SIZE = 75  // 75 × 0.02s = 1.5 saniye
+
     private var lastTrackBearingDeg: Float? = null
 
     private var lastDisplayedGpsSpeedKmh = 0f
@@ -531,6 +544,7 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
                                             "${"%.4f".format(forwardAxisX)}," +
                                             "${"%.4f".format(forwardAxisY)}," +
                                             "$faSampleCount," +
+                                            "${gravInitialized}" +
                                             "${"-"}," +                                  // KalmanSpeedKmh
                                             "${_speed.value.toInt()}," +
                                             "${"-"}," +                                  // FallbackElapsedMs
@@ -708,6 +722,14 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
         accOffsetSumZ = 0f
         accOffsetsReady = false
 
+        gravSampleCount = 0
+        gravInitialized = false
+        gravEmaX = 0f
+        gravEmaY = 0f
+        gravEmaZ = 9.81f
+        atAccWindow.clear()
+        atWindowSum = 0.0
+
         fallbackStartedAtNs = null
         lastGpsElapsedRealtimeNs = 0L
 
@@ -738,9 +760,9 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
         _trackMovementTime.value = 0.0
         tripOriginAbsCenter = null
 
-        val linearAccSensor = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)
-        if (linearAccSensor != null) {
-            sensorManager.registerListener(this, linearAccSensor, SensorManager.SENSOR_DELAY_GAME)
+        val rawAccSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+        if (rawAccSensor != null) {
+            sensorManager.registerListener(this, rawAccSensor, SensorManager.SENSOR_DELAY_GAME)
         }
 
         val rotationSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
@@ -775,7 +797,7 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
         } else {
             Log.e("CSV", "MediaStore URI oluşturulamadı")
         }
-        csvWriter?.write("Timestamp,Mode,Latitude,Longitude,Altitude,X Acceleration(m/s²),Y Acceleration(m/s²),Z Acceleration(m/s²),AlongTrackAcc,ClampedAcc,FwdAxisX,FwdAxisY,FaSampleCount,KalmanSpeedKmh,DisplayedSpeedKmh,FallbackElapsedMs,Position(m),GpsRawSpeed")
+        csvWriter?.write("Timestamp,Mode,Latitude,Longitude,Altitude,X Acceleration(m/s²),Y Acceleration(m/s²),Z Acceleration(m/s²),AlongTrackAcc,ClampedAcc,FwdAxisX,FwdAxisY,FaSampleCount,GravInit,KalmanSpeedKmh,DisplayedSpeedKmh,FallbackElapsedMs,Position(m),GpsRawSpeed")
         csvWriter?.newLine()
 
         val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 250L)
@@ -907,7 +929,7 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
                 rotationVectorValues = event.values.clone()
                 return
             }
-            Sensor.TYPE_LINEAR_ACCELERATION -> {
+            Sensor.TYPE_ACCELEROMETER -> {
             }
             else -> return
         }
@@ -920,33 +942,39 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
         val rawY = event.values[1]
         val rawZ = event.values[2]
 
-        if (!accOffsetsReady && totalData < calibrationDataCount) {
-            val rawNorm = sqrt(rawX * rawX + rawY * rawY + rawZ * rawZ)
-            if (rawNorm < 0.15f) {
-                accOffsetSumX += rawX
-                accOffsetSumY += rawY
-                accOffsetSumZ += rawZ
-                accOffsetSampleCount++
+        // Yerçekimi tahmini: ilk 200 örnek (~4 saniye) ortalanarak başlangıç değeri alınır.
+        // Cihaz bu sürede sabit tutulmalı (tren duruyorken başlatılır).
+        if (!gravInitialized) {
+            gravEmaX += rawX
+            gravEmaY += rawY
+            gravEmaZ += rawZ
+            gravSampleCount++
+            if (gravSampleCount >= 200) {
+                gravEmaX /= gravSampleCount
+                gravEmaY /= gravSampleCount
+                gravEmaZ /= gravSampleCount
+                gravInitialized = true
+                Log.d("GRAV_CAL", "Gravity init: x=$gravEmaX y=$gravEmaY z=$gravEmaZ norm=${
+                    sqrt(gravEmaX*gravEmaX + gravEmaY*gravEmaY + gravEmaZ*gravEmaZ)}")
             }
-
-            if (accOffsetSampleCount >= 40) {
-                accOffsetX = accOffsetSumX / accOffsetSampleCount
-                accOffsetY = accOffsetSumY / accOffsetSampleCount
-                accOffsetZ = accOffsetSumZ / accOffsetSampleCount
-                accOffsetsReady = true
-
-                Log.d("ACC_CAL", "Offsets ready: x=$accOffsetX y=$accOffsetY z=$accOffsetZ")
-            }
+        } else {
+            // Çok yavaş EMA: τ≈60s — telefon eğimindeki çok yavaş değişiklikleri yakalar,
+            // tren ivmesini (birkaç saniyelik) silmez.
+            gravEmaX = GRAV_ALPHA * gravEmaX + (1f - GRAV_ALPHA) * rawX
+            gravEmaY = GRAV_ALPHA * gravEmaY + (1f - GRAV_ALPHA) * rawY
+            gravEmaZ = GRAV_ALPHA * gravEmaZ + (1f - GRAV_ALPHA) * rawZ
         }
 
-        val calibratedX = rawX - accOffsetX
-        val calibratedY = rawY - accOffsetY
-        val calibratedZ = rawZ - accOffsetZ
+        // Yerçekiminden arındırılmış doğrusal ivme
+        val linX = rawX - gravEmaX
+        val linY = rawY - gravEmaY
+        val linZ = rawZ - gravEmaZ
 
-        val alpha = 0.78f
-        filteredAccX = alpha * calibratedX + (1f - alpha) * filteredAccX
-        filteredAccY = alpha * calibratedY + (1f - alpha) * filteredAccY
-        filteredAccZ = alpha * calibratedZ + (1f - alpha) * filteredAccZ
+        // Hafif gürültü filtresi (vibrasyon sliding window'da ayrıca temizlenecek)
+        val alpha = 0.4f
+        filteredAccX = alpha * linX + (1f - alpha) * filteredAccX
+        filteredAccY = alpha * linY + (1f - alpha) * filteredAccY
+        filteredAccZ = alpha * linZ + (1f - alpha) * filteredAccZ
 
         currentLinearAcc[0] = filteredAccX
         currentLinearAcc[1] = filteredAccY
@@ -1021,7 +1049,14 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
                 return
             }
 
-            val clampedAcc = alongTrackAccSigned.coerceIn(-2.5, 2.5)
+            // Sliding window: 1.5 saniyelik ortalama — vibrasyon sıfırlanır, yavaş tren ivmesi korunur
+            atWindowSum += alongTrackAccSigned
+            atAccWindow.addLast(alongTrackAccSigned)
+            if (atAccWindow.size > AT_WINDOW_SIZE) {
+                atWindowSum -= atAccWindow.removeFirst()
+            }
+            val smoothedAlong = if (atAccWindow.isNotEmpty()) atWindowSum / atAccWindow.size else alongTrackAccSigned
+            val clampedAcc = smoothedAlong.coerceIn(-0.5, 0.5)
             fallbackFilter?.predict(clampedAcc, dt)
             Log.d("FALLBACK", "acc=${"%.3f".format(clampedAcc)} bias=${"%.4f".format(fallbackFilter?.getBias())} speed=${"%.1f".format(fallbackFilter?.getSpeedKmh())} dt=${"%.3f".format(dt)}")
             lastFallbackSpeedBeforeGpsReturn = _speed.value
@@ -1068,6 +1103,7 @@ class LocationViewModel(private val homeViewModel: HomeViewModel) : ViewModel(),
                             "${"%.4f".format(forwardAxisX)}," +
                             "${"%.4f".format(forwardAxisY)}," +
                             "$faSampleCount," +
+                            "${gravInitialized}" +
                             "${"%.2f".format(fallbackFilter?.getSpeedKmh() ?: -1f)}," +  // KalmanSpeedKmh
                             "${_speed.value.toInt()}," +                  // DisplayedSpeedKmh
                             "$fallbackMs," +
