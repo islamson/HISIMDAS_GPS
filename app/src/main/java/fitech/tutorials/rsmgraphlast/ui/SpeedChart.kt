@@ -219,14 +219,38 @@ fun SpeedChart(
                         return list.map { e -> Entry(mirrorX(e.x), e.y) }
                     }
 
+                    val isDasDescending = dasProfile.size >= 2 && dasProfile.first().x > dasProfile.last().x
+
+                    fun transformDasProfileIfNeeded(list: List<Entry>): List<Entry> {
+                        if (!isE2W) return list
+                        if (!isDasDescending) return list
+
+                        return list
+                            .map { e -> Entry(mirrorX(e.x), e.y) }
+                            .sortedBy { it.x }
+                    }
+
+                    fun transformBandIfNeeded(band: Pair<Float, Float>): Pair<Float, Float> {
+                        if (!isE2W) {
+                            return minOf(band.first, band.second) to maxOf(band.first, band.second)
+                        }
+
+                        if (band.first > band.second) {
+                            val mirroredStart = mirrorX(band.first)
+                            val mirroredEnd = mirrorX(band.second)
+                            return minOf(mirroredStart, mirroredEnd) to maxOf(mirroredStart, mirroredEnd)
+                        }
+
+                        else
+                            return minOf(band.first, band.second) to maxOf(band.first, band.second)
+                    }
+
                     val lineDataSets = mutableListOf<ILineDataSet>()
 
                     // Tüm coasting band'leri ekle
                     coastingBands.forEach { band ->
-                        val normalizedBand = minOf(band.first, band.second) to
-                                maxOf(band.first, band.second)
-
-                        lineDataSets += buildCoastingBandDataSet(normalizedBand, yMax = yMax!!)
+                        val chartBand = transformBandIfNeeded(band)
+                        lineDataSets += buildCoastingBandDataSet(chartBand, yMax = yMax!!)
                     }
 
                     chart.xAxis.valueFormatter = object : com.github.mikephil.charting.formatter.ValueFormatter() {
@@ -259,13 +283,20 @@ fun SpeedChart(
                     }
 
                     // DASProfile (All-Out/Coasting profili)
-                    val dasDataSet = LineDataSet(dasProfile, "DASProfile").apply {
+                    val dasProfileForChart = transformDasProfileIfNeeded(dasProfile)
+
+                    val dasDataSet = LineDataSet(dasProfileForChart, "DASProfile").apply {
                         color = Color.BLUE
                         setDrawCircles(false)
                         setDrawValues(false)
                         lineWidth = 2f
                         mode = LineDataSet.Mode.LINEAR
                     }
+
+                    Log.d(
+                        "SpeedChart",
+                        "direction=$direction isDasDescending=$isDasDescending firstX=${dasProfile.firstOrNull()?.x} lastX=${dasProfile.lastOrNull()?.x}"
+                    )
 
                     lineDataSets.add(velocityDataSet)
                     lineDataSets.add(speedLimitDataSet)
