@@ -148,7 +148,7 @@ class CoastingEngine(
 
         val resp = dasApi.simulate(body)
         if (!resp.isSuccessful) return@withContext null
-
+        Log.d("Fixed", "start:${resp.body()?.coastingRegion?.get(0)?.startPosition} end:${resp.body()?.coastingRegion?.get(0)?.endPosition}")
         resp.body()
     }
 
